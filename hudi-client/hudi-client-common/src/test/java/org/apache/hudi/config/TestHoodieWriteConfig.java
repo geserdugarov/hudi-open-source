@@ -517,7 +517,7 @@ public class TestHoodieWriteConfig {
         .withWriteConcurrencyMode(WriteConcurrencyMode.NON_BLOCKING_CONCURRENCY_CONTROL)
         .build();
 
-    // Verify automatically set hoodie.cleaner.policy.failed.writes=LAZY for non-blocking concurrency control
+    // Verify automatically set hoodie.cleaner.failed.writes.policy=LAZY for non-blocking concurrency control
     verifyConcurrencyControlRelatedConfigs(writeConfig,
         true, true, true,
         WriteConcurrencyMode.NON_BLOCKING_CONCURRENCY_CONTROL, HoodieFailedWritesCleaningPolicy.LAZY,

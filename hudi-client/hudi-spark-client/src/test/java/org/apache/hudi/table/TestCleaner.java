@@ -411,7 +411,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
   }
 
   /**
-   * Tests no more than 1 clean is scheduled if hoodie.clean.allow.multiple config is set to false.
+   * Tests no more than 1 clean is scheduled if hoodie.cleaner.multiple.enabled config is set to false.
    */
   @Test
   public void testMultiClean() {
@@ -458,7 +458,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
       // Try to schedule another clean
       String newCleanInstantTime = "00" + index++;
       HoodieCleanMetadata cleanMetadata = client.clean(newCleanInstantTime);
-      // When hoodie.clean.allow.multiple is set to false, a new clean action should not be scheduled.
+      // When hoodie.cleaner.multiple.enabled is set to false, a new clean action should not be scheduled.
       // The existing requested clean should complete execution.
       assertNotNull(cleanMetadata);
       assertTrue(metaClient.reloadActiveTimeline().getCleanerTimeline()

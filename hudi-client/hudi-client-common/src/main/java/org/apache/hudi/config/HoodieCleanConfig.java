@@ -53,16 +53,18 @@ public class HoodieCleanConfig extends HoodieConfig {
   private static final String CLEANER_FILE_VERSIONS_RETAINED_KEY = "hoodie.cleaner.fileversions.retained";
 
   public static final ConfigProperty<String> AUTO_CLEAN = ConfigProperty
-      .key("hoodie.clean.automatic")
+      .key("hoodie.cleaner.automatic")
       .defaultValue("true")
+      .withAlternatives("hoodie.clean.automatic")
       .markAdvanced()
       .withDocumentation("When enabled, the cleaner table service is invoked immediately after each commit, "
           + "to delete older file slices. It's recommended to enable this, to ensure metadata and data storage "
           + "growth is bounded.");
 
   public static final ConfigProperty<String> ASYNC_CLEAN = ConfigProperty
-      .key("hoodie.clean.async")
+      .key("hoodie.cleaner.async.enabled")
       .defaultValue("false")
+      .withAlternatives("hoodie.clean.async")
       .withDocumentation("Only applies when " + AUTO_CLEAN.key() + " is turned on. "
           + "When turned on runs cleaner async with writing, which can speed up overall write performance.");
 
@@ -118,28 +120,32 @@ public class HoodieCleanConfig extends HoodieConfig {
           + "the minimum number of file slices to retain in each file group, during cleaning.");
 
   public static final ConfigProperty<String> CLEAN_TRIGGER_STRATEGY = ConfigProperty
-      .key("hoodie.clean.trigger.strategy")
+      .key("hoodie.cleaner.trigger.strategy")
       .defaultValue(CleaningTriggerStrategy.NUM_COMMITS.name())
+      .withAlternatives("hoodie.clean.trigger.strategy")
       .markAdvanced()
       .withDocumentation(CleaningTriggerStrategy.class);
 
   public static final ConfigProperty<String> CLEAN_MAX_COMMITS = ConfigProperty
-      .key("hoodie.clean.max.commits")
+      .key("hoodie.cleaner.trigger.max.commits")
       .defaultValue("1")
+      .withAlternatives("hoodie.clean.max.commits")
       .markAdvanced()
       .withDocumentation("Number of commits after the last clean operation, before scheduling of a new clean is attempted.");
 
   public static final ConfigProperty<String> CLEANER_INCREMENTAL_MODE_ENABLE = ConfigProperty
-      .key("hoodie.cleaner.incremental.mode")
+      .key("hoodie.cleaner.incremental.enabled")
       .defaultValue("true")
+      .withAlternatives("hoodie.cleaner.incremental.mode")
       .markAdvanced()
       .withDocumentation("When enabled, the plans for each cleaner service run is computed incrementally off the events "
           + "in the timeline, since the last cleaner run. This is much more efficient than obtaining listings for the full "
           + "table for each planning (even with a metadata table).");
 
   public static final ConfigProperty<String> FAILED_WRITES_CLEANER_POLICY = ConfigProperty
-      .key("hoodie.cleaner.policy.failed.writes")
+      .key("hoodie.cleaner.failed.writes.policy")
       .defaultValue(HoodieFailedWritesCleaningPolicy.EAGER.name())
+      .withAlternatives("hoodie.cleaner.policy.failed.writes")
       .withInferFunction(cfg -> {
         Option<String> writeConcurrencyModeOpt = Option.ofNullable(cfg.getString(HoodieWriteConfig.WRITE_CONCURRENCY_MODE));
         if (!writeConcurrencyModeOpt.isPresent()
@@ -168,8 +174,9 @@ public class HoodieCleanConfig extends HoodieConfig {
           + "performance..");
 
   public static final ConfigProperty<Boolean> ALLOW_MULTIPLE_CLEANS = ConfigProperty
-      .key("hoodie.clean.allow.multiple")
+      .key("hoodie.cleaner.multiple.enabled")
       .defaultValue(true)
+      .withAlternatives("hoodie.clean.allow.multiple")
       .markAdvanced()
       .sinceVersion("0.11.0")
       .withDocumentation("Allows scheduling/executing multiple cleans by enabling this config. If users prefer to strictly ensure clean requests should be mutually exclusive, "
