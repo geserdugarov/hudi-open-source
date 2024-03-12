@@ -725,40 +725,45 @@ public class FlinkOptions extends HoodieConfig {
       .withDescription("Target IO in MB for per compaction (both read and write), default 500 GB");
 
   public static final ConfigOption<Boolean> CLEAN_ASYNC_ENABLED = ConfigOptions
-      .key("clean.async.enabled")
+      .key("hoodie.cleaner.async.enabled")
       .booleanType()
       .defaultValue(true)
+      .withFallbackKeys("clean.async.enabled")
       .withDescription("Whether to cleanup the old commits immediately on new commits, enabled by default");
 
   @AdvancedConfig
   public static final ConfigOption<String> CLEAN_POLICY = ConfigOptions
-      .key("clean.policy")
+      .key("hoodie.cleaner.policy")
       .stringType()
       .defaultValue(HoodieCleaningPolicy.KEEP_LATEST_COMMITS.name())
+      .withFallbackKeys("clean.policy")
       .withDescription("Clean policy to manage the Hudi table. Available option: KEEP_LATEST_COMMITS, KEEP_LATEST_FILE_VERSIONS, KEEP_LATEST_BY_HOURS."
           + "Default is KEEP_LATEST_COMMITS.");
 
   public static final ConfigOption<Integer> CLEAN_RETAIN_COMMITS = ConfigOptions
-      .key("clean.retain_commits")
+      .key("hoodie.cleaner.commits.retained")
       .intType()
       .defaultValue(30)// default 30 commits
+      .withFallbackKeys("clean.retain_commits")
       .withDescription("Number of commits to retain. So data will be retained for num_of_commits * time_between_commits (scheduled).\n"
           + "This also directly translates into how much you can incrementally pull on this table, default 30");
 
   @AdvancedConfig
   public static final ConfigOption<Integer> CLEAN_RETAIN_HOURS = ConfigOptions
-      .key("clean.retain_hours")
+      .key("hoodie.cleaner.hours.retained")
       .intType()
       .defaultValue(24)// default 24 hours
+      .withFallbackKeys("clean.retain_hours")
       .withDescription("Number of hours for which commits need to be retained. This config provides a more flexible option as"
           + "compared to number of commits retained for cleaning service. Setting this property ensures all the files, but the latest in a file group,"
           + " corresponding to commits with commit times older than the configured number of hours to be retained are cleaned.");
 
   @AdvancedConfig
   public static final ConfigOption<Integer> CLEAN_RETAIN_FILE_VERSIONS = ConfigOptions
-      .key("clean.retain_file_versions")
+      .key("hoodie.cleaner.fileversions.retained")
       .intType()
       .defaultValue(5)// default 5 version
+      .withFallbackKeys("clean.retain_file_versions")
       .withDescription("Number of file versions to retain. default 5");
 
   public static final ConfigOption<Integer> ARCHIVE_MAX_COMMITS = ConfigOptions
