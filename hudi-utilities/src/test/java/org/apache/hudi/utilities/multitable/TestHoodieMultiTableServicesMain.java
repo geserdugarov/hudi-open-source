@@ -306,7 +306,7 @@ class TestHoodieMultiTableServicesMain extends HoodieCommonTestHarness implement
     cfg.enableArchive = true;
     List<String> configs = new ArrayList<>();
     configs.add(String.format("%s=%s", HoodieCleanConfig.CLEANER_POLICY.key(), HoodieCleaningPolicy.KEEP_LATEST_FILE_VERSIONS));
-    configs.add(String.format("%s=%s", HoodieCleanConfig.AUTO_CLEAN.key(), "false"));
+    configs.add(String.format("%s=%s", "hoodie.clean.automatic", "false"));
     configs.add(String.format("%s=%s", HoodieCleanConfig.CLEANER_FILE_VERSIONS_RETAINED.key(), "1"));
     configs.add(String.format("%s=%s", HoodieCompactionConfig.INLINE_COMPACT_NUM_DELTA_COMMITS.key(), "0"));
     cfg.configs = configs;

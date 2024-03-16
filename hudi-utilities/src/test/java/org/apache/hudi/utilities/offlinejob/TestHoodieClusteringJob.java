@@ -160,7 +160,7 @@ public class TestHoodieClusteringJob extends HoodieOfflineJobTestBase {
     config.runSchedule = runSchedule;
     config.runningMode = runningMode;
     config.configs.add("hoodie.metadata.enable=false");
-    config.configs.add(String.format("%s=%s", HoodieCleanConfig.AUTO_CLEAN.key(), isAutoClean));
+    config.configs.add(String.format("%s=%s", "hoodie.clean.automatic", isAutoClean));
     config.configs.add(String.format("%s=%s", HoodieCleanConfig.CLEANER_COMMITS_RETAINED.key(), 1));
     config.configs.add(String.format("%s=%s", HoodieClusteringConfig.INLINE_CLUSTERING_MAX_COMMITS.key(), 1));
     return config;

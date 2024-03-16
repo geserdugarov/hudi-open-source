@@ -51,8 +51,6 @@ import static org.apache.hudi.common.model.HoodieCleaningPolicy.KEEP_LATEST_BY_H
 import static org.apache.hudi.common.model.HoodieCleaningPolicy.KEEP_LATEST_COMMITS;
 import static org.apache.hudi.common.model.HoodieCleaningPolicy.KEEP_LATEST_FILE_VERSIONS;
 import static org.apache.hudi.config.HoodieArchivalConfig.ASYNC_ARCHIVE;
-import static org.apache.hudi.config.HoodieCleanConfig.ASYNC_CLEAN;
-import static org.apache.hudi.config.HoodieCleanConfig.AUTO_CLEAN;
 import static org.apache.hudi.config.HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY;
 import static org.apache.hudi.config.HoodieClusteringConfig.ASYNC_CLUSTERING_ENABLE;
 import static org.apache.hudi.config.HoodieCompactionConfig.INLINE_COMPACT;
@@ -214,8 +212,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "true");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "false");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "false");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
         }), true, true, true,
@@ -229,8 +227,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "false");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "true");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "true");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
         }), true, true, true,
@@ -244,8 +242,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "false");
             put(INLINE_COMPACT.key(), "false");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "false");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "false");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
         }), true,
@@ -262,8 +260,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "false");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "false");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "false");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
         }), true, false, true,
@@ -277,8 +275,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "true");
             put(INLINE_COMPACT.key(), "false");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "true");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "true");
             put(ASYNC_ARCHIVE.key(), "true");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
@@ -347,8 +345,8 @@ public class TestHoodieWriteConfig {
             put(HoodieTableConfig.TYPE.key(), tableType.name());
             put(ASYNC_CLUSTERING_ENABLE.key(), "false");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "true");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "true");
             put(HoodieLockConfig.LOCK_PROVIDER_CLASS_NAME.key(),
                 ZookeeperBasedLockProvider.class.getName());
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
@@ -424,8 +422,8 @@ public class TestHoodieWriteConfig {
             put(HoodieMetadataConfig.ENABLE.key(), "false");
             put(ASYNC_CLUSTERING_ENABLE.key(), "true");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "false");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "false");
             put(HoodieWriteConfig.AUTO_ADJUST_LOCK_CONFIGS.key(), "true");
           }
         }), true, true, true,
@@ -439,8 +437,8 @@ public class TestHoodieWriteConfig {
           {
             put(ASYNC_CLUSTERING_ENABLE.key(), "true");
             put(INLINE_COMPACT.key(), "true");
-            put(AUTO_CLEAN.key(), "true");
-            put(ASYNC_CLEAN.key(), "false");
+            put("hoodie.clean.automatic", "true");
+            put("hoodie.clean.async", "false");
             put(WRITE_CONCURRENCY_MODE.key(),
                 WriteConcurrencyMode.OPTIMISTIC_CONCURRENCY_CONTROL.name());
             put(HoodieLockConfig.LOCK_PROVIDER_CLASS_NAME.key(),

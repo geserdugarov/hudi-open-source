@@ -25,7 +25,6 @@ import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.model.WriteConcurrencyMode;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.table.view.FileSystemViewStorageType;
-import org.apache.hudi.config.HoodieCleanConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.configuration.OptionsResolver;
@@ -662,7 +661,7 @@ public class TestWriteCopyOnWrite extends TestWriteBase {
 
   @Test
   public void testRollbackFailedWritesWithLazyCleanPolicy() throws Exception {
-    conf.setString(HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY.key(), HoodieFailedWritesCleaningPolicy.LAZY.name());
+    conf.setString("hoodie.cleaner.incremental.mode", HoodieFailedWritesCleaningPolicy.LAZY.name());
 
     preparePipeline()
         .consume(TestData.DATA_SET_INSERT)

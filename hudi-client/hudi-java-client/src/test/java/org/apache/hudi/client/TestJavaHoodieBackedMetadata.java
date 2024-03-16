@@ -2392,7 +2392,7 @@ public class TestJavaHoodieBackedMetadata extends TestHoodieMetadataBase {
     HoodieEngineContext engineContext = new HoodieJavaEngineContext(hadoopConf);
 
     Properties props = new Properties();
-    props.put(HoodieCleanConfig.ALLOW_MULTIPLE_CLEANS.key(), "false");
+    props.put("hoodie.clean.allow.multiple", "false");
     HoodieWriteConfig writeConfig = getWriteConfigBuilder(true, true, false).withProps(props).build();
 
     // Perform three writes so we can initiate a clean

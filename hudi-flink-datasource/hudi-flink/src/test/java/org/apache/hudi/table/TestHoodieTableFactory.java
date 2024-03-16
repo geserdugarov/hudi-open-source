@@ -451,7 +451,7 @@ public class TestHoodieTableFactory {
         .primaryKey("f0")
         .build();
     // set up new retains commits that is less than min archive commits
-    this.conf.setString(FlinkOptions.CLEAN_RETAIN_COMMITS.key(), "11");
+    this.conf.setString("clean.retain_commits", "11");
 
     final MockContext sourceContext1 = MockContext.getInstance(this.conf, schema1, "f2");
     final HoodieTableSource tableSource1 = (HoodieTableSource) new HoodieTableFactory().createDynamicTableSource(sourceContext1);
@@ -461,7 +461,7 @@ public class TestHoodieTableFactory {
 
     // set up new retains commits that is greater than min archive commits
     final int retainCommits = FlinkOptions.ARCHIVE_MIN_COMMITS.defaultValue() + 5;
-    this.conf.setInteger(FlinkOptions.CLEAN_RETAIN_COMMITS.key(), retainCommits);
+    this.conf.setInteger("clean.retain_commits", retainCommits);
 
     final MockContext sourceContext2 = MockContext.getInstance(this.conf, schema1, "f2");
     final HoodieTableSource tableSource2 = (HoodieTableSource) new HoodieTableFactory().createDynamicTableSource(sourceContext2);
@@ -662,7 +662,7 @@ public class TestHoodieTableFactory {
         .primaryKey("f0")
         .build();
     // set up new retains commits that is less than min archive commits
-    this.conf.setString(FlinkOptions.CLEAN_RETAIN_COMMITS.key(), "11");
+    this.conf.setString("clean.retain_commits", "11");
 
     final MockContext sinkContext1 = MockContext.getInstance(this.conf, schema1, "f2");
     final HoodieTableSink tableSink1 = (HoodieTableSink) new HoodieTableFactory().createDynamicTableSink(sinkContext1);
@@ -672,7 +672,7 @@ public class TestHoodieTableFactory {
 
     // set up new retains commits that is greater than min archive commits
     final int retainCommits = FlinkOptions.ARCHIVE_MIN_COMMITS.defaultValue() + 5;
-    this.conf.setInteger(FlinkOptions.CLEAN_RETAIN_COMMITS.key(), retainCommits);
+    this.conf.setInteger("clean.retain_commits", retainCommits);
 
     final MockContext sinkContext2 = MockContext.getInstance(this.conf, schema1, "f2");
     final HoodieTableSink tableSink2 = (HoodieTableSink) new HoodieTableFactory().createDynamicTableSink(sinkContext2);

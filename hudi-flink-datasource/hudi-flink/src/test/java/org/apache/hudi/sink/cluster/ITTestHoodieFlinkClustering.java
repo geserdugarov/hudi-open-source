@@ -355,7 +355,7 @@ public class ITTestHoodieFlinkClustering {
     // set archive commits
     conf.setInteger(FlinkOptions.ARCHIVE_MAX_COMMITS.key(), 2);
     conf.setInteger(FlinkOptions.ARCHIVE_MIN_COMMITS.key(), 1);
-    conf.setInteger(FlinkOptions.CLEAN_RETAIN_COMMITS.key(), 0);
+    conf.setInteger("clean.retain_commits", 0);
 
     // set table schema
     CompactionUtil.setAvroSchema(conf, metaClient);

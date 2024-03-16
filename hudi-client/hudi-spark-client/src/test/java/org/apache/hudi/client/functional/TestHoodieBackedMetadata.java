@@ -3074,7 +3074,7 @@ public class TestHoodieBackedMetadata extends TestHoodieMetadataBase {
     HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
 
     Properties props = new Properties();
-    props.put(HoodieCleanConfig.ALLOW_MULTIPLE_CLEANS.key(), "false");
+    props.put("hoodie.clean.allow.multiple", "false");
     HoodieWriteConfig writeConfig = getWriteConfigBuilder(true, true, false).withProps(props).build();
 
     // Perform three writes so we can initiate a clean

@@ -224,7 +224,7 @@ public class TestStreamWriteOperatorCoordinator {
     reset();
     // override the default configuration
     Configuration conf = TestConfigurations.getDefaultConf(tempFile.getAbsolutePath());
-    conf.setString(HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY.key(), HoodieFailedWritesCleaningPolicy.LAZY.name());
+    conf.setString("hoodie.cleaner.incremental.mode", HoodieFailedWritesCleaningPolicy.LAZY.name());
     OperatorCoordinator.Context context = new MockOperatorCoordinatorContext(new OperatorID(), 1);
     coordinator = new StreamWriteOperatorCoordinator(conf, context);
     coordinator.start();
