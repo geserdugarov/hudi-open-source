@@ -34,6 +34,7 @@ import org.apache.hudi.sink.bootstrap.BootstrapOperator;
 import org.apache.hudi.sink.bootstrap.batch.BatchBootstrapOperator;
 import org.apache.hudi.sink.bucket.BucketBulkInsertWriterHelper;
 import org.apache.hudi.sink.bucket.BucketStreamWriteOperator;
+import org.apache.hudi.sink.bucket.BucketStreamWriteRowDataOperator;
 import org.apache.hudi.sink.bucket.ConsistentBucketAssignFunction;
 import org.apache.hudi.sink.bulk.BulkInsertWriteOperator;
 import org.apache.hudi.sink.bulk.RowDataKeyGen;
@@ -51,11 +52,16 @@ import org.apache.hudi.sink.compact.CompactionPlanEvent;
 import org.apache.hudi.sink.compact.CompactionPlanOperator;
 import org.apache.hudi.sink.partitioner.BucketAssignFunction;
 import org.apache.hudi.sink.partitioner.BucketIndexPartitioner;
+import org.apache.hudi.sink.partitioner.BucketIndexPartitionerRowData;
+import org.apache.hudi.sink.transform.RowDataEnrichFunctions;
 import org.apache.hudi.sink.transform.RowDataToHoodieFunctions;
 import org.apache.hudi.table.format.FilePathUtils;
 
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.java.tuple.Tuple;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -66,6 +72,7 @@ import org.apache.flink.streaming.api.operators.ProcessOperator;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
+import org.apache.flink.table.runtime.typeutils.StringDataTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.ArrayList;
@@ -260,6 +267,22 @@ public class Pipelines {
     }
   }
 
+  public static DataStream<Tuple> bootstrapRowData(
+      Configuration conf,
+      RowType rowType,
+      DataStream<RowData> dataStream,
+      boolean bounded,
+      boolean overwrite) {
+    final boolean globalIndex = conf.getBoolean(FlinkOptions.INDEX_GLOBAL_ENABLED);
+    if (overwrite || OptionsResolver.isBucketIndexType(conf)) {
+      return rowDataEnrich(conf, rowType, dataStream);
+    } else if (bounded && !globalIndex && OptionsResolver.isPartitionedTable(conf)) {
+      throw new HoodieNotSupportedException("Currently, only SIMPLE BUCKET index is supported with " + FlinkOptions.WRITE_OPTIMIZED_SERDE.key() + "= true");
+    } else {
+      throw new HoodieNotSupportedException("Currently, only SIMPLE BUCKET index is supported with " + FlinkOptions.WRITE_OPTIMIZED_SERDE.key() + "= true");
+    }
+  }
+
   private static DataStream<HoodieRecord> streamBootstrap(
       Configuration conf,
       RowType rowType,
@@ -309,6 +332,14 @@ public class Pipelines {
   public static DataStream<HoodieRecord> rowDataToHoodieRecord(Configuration conf, RowType rowType, DataStream<RowData> dataStream) {
     return dataStream.map(RowDataToHoodieFunctions.create(rowType, conf), TypeInformation.of(HoodieRecord.class))
         .setParallelism(dataStream.getParallelism()).name("row_data_to_hoodie_record");
+  }
+
+  public static DataStream<Tuple> rowDataEnrich(Configuration conf, RowType rowType, DataStream<RowData> dataStream) {
+    return dataStream
+        .map(RowDataEnrichFunctions.create(rowType, conf),
+            new TupleTypeInfo<>(StringDataTypeInfo.INSTANCE, StringDataTypeInfo.INSTANCE, dataStream.getType()))
+        .setParallelism(dataStream.getParallelism())
+        .name("row_data_enrich");
   }
 
   /**
@@ -386,6 +417,29 @@ public class Pipelines {
           .transform(opName("stream_write", conf), TypeInformation.of(Object.class), operatorFactory)
           .uid(opUID("stream_write", conf))
           .setParallelism(conf.getInteger(FlinkOptions.WRITE_TASKS));
+    }
+  }
+
+  public static DataStream<Object> hoodieStreamWriteRowData(Configuration conf, RowType rowType, DataStream<Tuple> dataStream) {
+    if (OptionsResolver.isBucketIndexType(conf)) {
+      HoodieIndex.BucketIndexEngineType bucketIndexEngineType = OptionsResolver.getBucketEngineType(conf);
+      switch (bucketIndexEngineType) {
+        case SIMPLE:
+          int bucketNum = conf.getInteger(FlinkOptions.BUCKET_INDEX_NUM_BUCKETS);
+          String indexKeyFields = OptionsResolver.getIndexKeyField(conf);
+          BucketIndexPartitionerRowData<Tuple> partitioner = new BucketIndexPartitionerRowData<>(bucketNum, indexKeyFields);
+          return dataStream
+              .partitionCustom(partitioner, (row -> new Tuple2<>(row.getFieldNotNull(0), row.getFieldNotNull(1))))
+              .transform(opName("bucket_write", conf), TypeInformation.of(Object.class), BucketStreamWriteRowDataOperator.getFactory(conf, rowType))
+              .uid(opUID("bucket_write", conf))
+              .setParallelism(conf.getInteger(FlinkOptions.WRITE_TASKS));
+        case CONSISTENT_HASHING:
+          throw new HoodieNotSupportedException("Currently, only SIMPLE BUCKET index is supported with " + FlinkOptions.WRITE_OPTIMIZED_SERDE.key() + "= true");
+        default:
+          throw new HoodieNotSupportedException("Unknown bucket index engine type: " + bucketIndexEngineType);
+      }
+    } else {
+      throw new HoodieNotSupportedException("Currently, only SIMPLE BUCKET index is supported with " + FlinkOptions.WRITE_OPTIMIZED_SERDE.key() + "= true");
     }
   }
 

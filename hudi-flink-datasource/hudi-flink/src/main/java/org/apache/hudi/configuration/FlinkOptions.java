@@ -675,6 +675,14 @@ public class FlinkOptions extends HoodieConfig {
       .defaultValue(ClientIds.INIT_CLIENT_ID)
       .withDescription("Unique identifier used to distinguish different writer pipelines for concurrent mode");
 
+  @AdvancedConfig
+  public static final ConfigOption<Boolean> WRITE_OPTIMIZED_SERDE = ConfigOptions
+      .key("write.optimized.serde")
+      .booleanType()
+      .defaultValue(false)
+      .withDescription("Optimized write to  row data to MOR log files. Note, that Simple Bucket index is only supported for now, "
+          + "and Parquet data blocks should be used in log files.");
+
   // ------------------------------------------------------------------------
   //  Compaction Options
   // ------------------------------------------------------------------------
