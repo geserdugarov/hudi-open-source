@@ -18,15 +18,12 @@
 
 package org.apache.hudi.sink.transform;
 
-import org.apache.hudi.common.model.HoodieAvroRecord;
+import org.apache.hudi.client.model.HoodieFlinkInternalRow;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieOperation;
-import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.keygen.KeyGenerator;
 import org.apache.hudi.keygen.factory.HoodieAvroKeyGeneratorFactory;
-import org.apache.hudi.sink.utils.PayloadCreation;
 import org.apache.hudi.util.RowDataToAvroConverters;
 import org.apache.hudi.util.StreamerUtil;
 
@@ -37,14 +34,12 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
-import java.io.IOException;
-
 import static org.apache.hudi.util.StreamerUtil.flinkConf2TypedProperties;
 
 /**
- * Function that transforms RowData to HoodieRecord.
+ * Function that converts Flink {@link RowData} into {@link HoodieFlinkInternalRow}.
  */
-public class RowDataToHoodieFunction<I extends RowData, O extends HoodieRecord>
+public class RowDataToHoodieFunction<I extends RowData, O extends HoodieFlinkInternalRow>
     extends RichMapFunction<I, O> {
   /**
    * Row type of the input.
@@ -67,11 +62,6 @@ public class RowDataToHoodieFunction<I extends RowData, O extends HoodieRecord>
   private transient KeyGenerator keyGenerator;
 
   /**
-   * Utilities to create hoodie pay load instance.
-   */
-  private transient PayloadCreation payloadCreation;
-
-  /**
    * Config options.
    */
   private final Configuration config;
@@ -89,29 +79,17 @@ public class RowDataToHoodieFunction<I extends RowData, O extends HoodieRecord>
     this.keyGenerator =
         HoodieAvroKeyGeneratorFactory
             .createKeyGenerator(flinkConf2TypedProperties(this.config));
-    this.payloadCreation = PayloadCreation.instance(config);
   }
 
-  @SuppressWarnings("unchecked")
   @Override
-  public O map(I i) throws Exception {
-    return (O) toHoodieRecord(i);
-  }
-
-  /**
-   * Converts the give record to a {@link HoodieRecord}.
-   *
-   * @param record The input record
-   * @return HoodieRecord based on the configuration
-   * @throws IOException if error occurs
-   */
-  @SuppressWarnings("rawtypes")
-  private HoodieRecord toHoodieRecord(I record) throws Exception {
+  public O map(I record) throws Exception {
+    // [HUDI-8969] Analyze how to get rid of excessive conversions, should be a subtask for RFC-88
     GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, record);
     final HoodieKey hoodieKey = keyGenerator.getKey(gr);
-
-    HoodieRecordPayload payload = payloadCreation.createPayload(gr);
-    HoodieOperation operation = HoodieOperation.fromValue(record.getRowKind().toByteValue());
-    return new HoodieAvroRecord<>(hoodieKey, payload, operation);
+    return (O) new HoodieFlinkInternalRow(
+        hoodieKey.getRecordKey(),
+        hoodieKey.getPartitionPath(),
+        HoodieOperation.fromValue(record.getRowKind().toByteValue()).getName(),
+        record);
   }
 }

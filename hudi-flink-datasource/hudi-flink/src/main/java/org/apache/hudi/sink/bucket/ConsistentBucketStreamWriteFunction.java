@@ -27,6 +27,7 @@ import org.apache.hudi.sink.StreamWriteFunction;
 import org.apache.hudi.sink.clustering.update.strategy.FlinkConsistentBucketUpdateStrategy;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,10 +40,8 @@ import java.util.stream.Collectors;
 
 /**
  * A stream write function with consistent bucket hash index.
- *
- * @param <I> the input type
  */
-public class ConsistentBucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
+public class ConsistentBucketStreamWriteFunction extends StreamWriteFunction {
 
   private static final Logger LOG = LoggerFactory.getLogger(ConsistentBucketStreamWriteFunction.class);
 
@@ -53,8 +52,8 @@ public class ConsistentBucketStreamWriteFunction<I> extends StreamWriteFunction<
    *
    * @param config The config options
    */
-  public ConsistentBucketStreamWriteFunction(Configuration config) {
-    super(config);
+  public ConsistentBucketStreamWriteFunction(Configuration config, RowType rowType) {
+    super(config, rowType);
   }
 
   @Override
@@ -62,6 +61,7 @@ public class ConsistentBucketStreamWriteFunction<I> extends StreamWriteFunction<
     super.open(parameters);
     List<String> indexKeyFields = Arrays.asList(config.getString(FlinkOptions.INDEX_KEY_FIELD).split(","));
     this.updateStrategy = new FlinkConsistentBucketUpdateStrategy(this.writeClient, indexKeyFields);
+    preparePayload();
   }
 
   @Override

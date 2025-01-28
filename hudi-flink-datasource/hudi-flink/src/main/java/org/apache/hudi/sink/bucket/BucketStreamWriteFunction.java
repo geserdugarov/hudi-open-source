@@ -18,9 +18,13 @@
 
 package org.apache.hudi.sink.bucket;
 
+import org.apache.hudi.client.model.HoodieFlinkInternalRow;
+import org.apache.hudi.common.model.HoodieAvroRecord;
 import org.apache.hudi.common.model.HoodieKey;
+import org.apache.hudi.common.model.HoodieOperation;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordLocation;
+import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.util.Functions;
 import org.apache.hudi.common.util.hash.BucketIndexUtil;
 import org.apache.hudi.configuration.FlinkOptions;
@@ -28,9 +32,12 @@ import org.apache.hudi.configuration.OptionsResolver;
 import org.apache.hudi.index.bucket.BucketIdentifier;
 import org.apache.hudi.sink.StreamWriteFunction;
 
+import org.apache.avro.generic.GenericRecord;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,10 +54,8 @@ import java.util.Set;
  * <p>The task holds a fresh new local index: {(partition + bucket number) &rarr fileId} mapping, this index
  * is used for deciding whether the incoming records in an UPDATE or INSERT.
  * The index is local because different partition paths have separate items in the index.
- *
- * @param <I> the input type
  */
-public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
+public class BucketStreamWriteFunction extends StreamWriteFunction {
 
   private static final Logger LOG = LoggerFactory.getLogger(BucketStreamWriteFunction.class);
 
@@ -80,7 +85,6 @@ public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
    */
   private Functions.Function2<String, Integer, Integer> partitionIndexFunc;
 
-
   /**
    * To prevent strings compare for each record, define this only during open()
    */
@@ -91,8 +95,8 @@ public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
    *
    * @param config The config options
    */
-  public BucketStreamWriteFunction(Configuration config) {
-    super(config);
+  public BucketStreamWriteFunction(Configuration config, RowType rowType) {
+    super(config, rowType);
   }
 
   @Override
@@ -107,6 +111,7 @@ public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
     this.incBucketIndex = new HashSet<>();
     this.partitionIndexFunc = BucketIndexUtil.getPartitionIndexFunc(bucketNum, parallelism);
     this.isInsertOverwrite = OptionsResolver.isInsertOverwrite(config);
+    preparePayload();
   }
 
   @Override
@@ -121,21 +126,34 @@ public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
   }
 
   @Override
-  public void processElement(I i, ProcessFunction<I, Object>.Context context, Collector<Object> collector) throws Exception {
-    HoodieRecord<?> record = (HoodieRecord<?>) i;
-    final HoodieKey hoodieKey = record.getKey();
-    final String partition = hoodieKey.getPartitionPath();
-    final HoodieRecordLocation location;
+  public void processElement(HoodieFlinkInternalRow record,
+                             ProcessFunction<HoodieFlinkInternalRow, Object>.Context context,
+                             Collector<Object> collector) throws Exception {
+    RowData row = record.getRowData();
+    // [HUDI-8969] Analyze how to get rid of excessive conversions, should be a subtask of RFC-88
+    GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, row);
+    final HoodieKey hoodieKey = new HoodieKey(record.getRecordKey(), record.getPartitionPath());
 
-    // for insert overwrite operation skip the index loading
+    HoodieRecordPayload payload = payloadCreation.createPayload(gr);
+    HoodieOperation operation = HoodieOperation.fromValue(row.getRowKind().toByteValue());
+    HoodieRecord hoodieRecord = new HoodieAvroRecord<>(hoodieKey, payload, operation);
+
+    hoodieRecord.unseal();
+    hoodieRecord.setCurrentLocation(defineRecordLocation(hoodieKey, record.getPartitionPath()));
+    hoodieRecord.seal();
+    bufferRecord(hoodieRecord);
+  }
+
+  private HoodieRecordLocation defineRecordLocation(HoodieKey hoodieKey, String partition) {
+    // for insert overwrite operation skip `bucketIndex` loading
     if (!isInsertOverwrite) {
       bootstrapIndexIfNeed(partition);
     }
-
     Map<Integer, String> bucketToFileId = bucketIndex.computeIfAbsent(partition, p -> new HashMap<>());
     final int bucketNum = BucketIdentifier.getBucketId(hoodieKey.getRecordKey(), indexKeyFields, this.bucketNum);
     final String bucketId = partition + "/" + bucketNum;
 
+    final HoodieRecordLocation location;
     if (incBucketIndex.contains(bucketId)) {
       location = new HoodieRecordLocation("I", bucketToFileId.get(bucketNum));
     } else if (bucketToFileId.containsKey(bucketNum)) {
@@ -146,10 +164,7 @@ public class BucketStreamWriteFunction<I> extends StreamWriteFunction<I> {
       bucketToFileId.put(bucketNum, newFileId);
       incBucketIndex.add(bucketId);
     }
-    record.unseal();
-    record.setCurrentLocation(location);
-    record.seal();
-    bufferRecord(record);
+    return location;
   }
 
   /**

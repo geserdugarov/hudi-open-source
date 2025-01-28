@@ -19,8 +19,15 @@
 package org.apache.hudi.sink;
 
 import org.apache.hudi.client.WriteStatus;
+import org.apache.hudi.client.model.HoodieFlinkInternalRow;
+import org.apache.hudi.common.model.BaseAvroPayload;
+import org.apache.hudi.common.model.HoodieAvroRecord;
+import org.apache.hudi.common.model.HoodieKey;
+import org.apache.hudi.common.model.HoodieOperation;
 import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordMerger;
+import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.util.HoodieRecordUtils;
 import org.apache.hudi.common.util.ObjectSizeCalculator;
@@ -30,13 +37,19 @@ import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.metrics.FlinkStreamWriteMetrics;
 import org.apache.hudi.sink.common.AbstractStreamWriteFunction;
 import org.apache.hudi.sink.event.WriteMetadataEvent;
+import org.apache.hudi.sink.utils.PayloadCreation;
 import org.apache.hudi.table.action.commit.FlinkWriteHelper;
+import org.apache.hudi.util.RowDataToAvroConverters;
 import org.apache.hudi.util.StreamerUtil;
 
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,10 +98,9 @@ import java.util.function.BiFunction;
  *
  * <p>Note: The function task requires the input stream be shuffled by the file IDs.
  *
- * @param <I> Type of the input record
  * @see StreamWriteOperatorCoordinator
  */
-public class StreamWriteFunction<I> extends AbstractStreamWriteFunction<I> {
+public class StreamWriteFunction extends AbstractStreamWriteFunction<HoodieFlinkInternalRow> {
 
   private static final long serialVersionUID = 1L;
 
@@ -102,6 +114,14 @@ public class StreamWriteFunction<I> extends AbstractStreamWriteFunction<I> {
   protected transient BiFunction<List<HoodieRecord>, String, List<WriteStatus>> writeFunction;
 
   private transient HoodieRecordMerger recordMerger;
+
+  protected final RowType rowType;
+
+  protected transient Schema avroSchema;
+
+  protected transient RowDataToAvroConverters.RowDataToAvroConverter converter;
+
+  protected transient PayloadCreation payloadCreation;
 
   /**
    * Total size tracer.
@@ -118,8 +138,9 @@ public class StreamWriteFunction<I> extends AbstractStreamWriteFunction<I> {
    *
    * @param config The config options
    */
-  public StreamWriteFunction(Configuration config) {
+  public StreamWriteFunction(Configuration config, RowType rowType) {
     super(config);
+    this.rowType = rowType;
   }
 
   @Override
@@ -129,6 +150,17 @@ public class StreamWriteFunction<I> extends AbstractStreamWriteFunction<I> {
     initWriteFunction();
     initMergeClass();
     registerMetrics();
+    preparePayload();
+  }
+
+  protected void preparePayload() {
+    this.avroSchema = StreamerUtil.getSourceSchema(this.config);
+    this.converter = RowDataToAvroConverters.createConverter(this.rowType, this.config.getBoolean(FlinkOptions.WRITE_UTC_TIMEZONE));
+    try {
+      this.payloadCreation = PayloadCreation.instance(config);
+    } catch (Exception ex) {
+      throw new HoodieException("Failed payload creation in StreamWriteFunction", ex);
+    }
   }
 
   @Override
@@ -140,8 +172,29 @@ public class StreamWriteFunction<I> extends AbstractStreamWriteFunction<I> {
   }
 
   @Override
-  public void processElement(I value, ProcessFunction<I, Object>.Context ctx, Collector<Object> out) throws Exception {
-    bufferRecord((HoodieRecord<?>) value);
+  public void processElement(HoodieFlinkInternalRow record,
+                             ProcessFunction<HoodieFlinkInternalRow, Object>.Context ctx,
+                             Collector<Object> out) throws Exception {
+    RowData row = record.getRowData();
+    // [HUDI-8969] Analyze how to get rid of excessive conversions, should be a subtask of RFC-88
+    GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, row);
+    final HoodieKey hoodieKey = new HoodieKey(record.getRecordKey(), record.getPartitionPath());
+
+    HoodieRecordPayload payload;
+    if (record.getOperationType().equals("D")) {
+      // Processing of delete records from `BucketAssignFunction::processRecord`
+      payload = payloadCreation.createDeletePayload((BaseAvroPayload) payloadCreation.createPayload(gr));
+    } else {
+      payload = payloadCreation.createPayload(gr);
+    }
+    HoodieOperation operation = HoodieOperation.fromValue(row.getRowKind().toByteValue());
+    HoodieRecord hoodieRecord = new HoodieAvroRecord<>(hoodieKey, payload, operation);
+
+    hoodieRecord.unseal();
+    hoodieRecord.setCurrentLocation(new HoodieRecordLocation(record.getInstantTime(), record.getFileId()));
+    hoodieRecord.seal();
+
+    bufferRecord(hoodieRecord);
   }
 
   @Override

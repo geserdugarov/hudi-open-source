@@ -18,9 +18,9 @@
 
 package org.apache.hudi.streamer;
 
+import org.apache.hudi.client.model.HoodieFlinkInternalRow;
 import org.apache.hudi.common.config.DFSPropertiesConfiguration;
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.configuration.OptionsInference;
@@ -31,6 +31,7 @@ import org.apache.hudi.util.AvroSchemaConverter;
 import org.apache.hudi.util.StreamerUtil;
 
 import com.beust.jcommander.JCommander;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.formats.common.TimestampFormat;
 import org.apache.flink.formats.json.JsonRowDataDeserializationSchema;
@@ -90,6 +91,7 @@ public class HoodieFlinkStreamer {
             ), kafkaProps))
         .name("kafka_source")
         .uid("uid_kafka_source");
+    TypeInformation<RowData> rowDataInfo = dataStream.getType();
 
     if (cfg.transformerClassNames != null && !cfg.transformerClassNames.isEmpty()) {
       Option<Transformer> transformer = StreamerUtil.createTransformer(cfg.transformerClassNames);
@@ -115,8 +117,8 @@ public class HoodieFlinkStreamer {
         Pipelines.dummySink(pipeline);
       }
     } else {
-      DataStream<HoodieRecord> hoodieRecordDataStream = Pipelines.bootstrap(conf, rowType, dataStream);
-      pipeline = Pipelines.hoodieStreamWrite(conf, hoodieRecordDataStream);
+      DataStream<HoodieFlinkInternalRow> hoodieRecordDataStream = Pipelines.bootstrap(conf, rowType, rowDataInfo, dataStream);
+      pipeline = Pipelines.hoodieStreamWrite(conf, rowType, rowDataInfo, hoodieRecordDataStream);
       if (OptionsResolver.needsAsyncCompaction(conf)) {
         Pipelines.compact(conf, pipeline);
       } else {

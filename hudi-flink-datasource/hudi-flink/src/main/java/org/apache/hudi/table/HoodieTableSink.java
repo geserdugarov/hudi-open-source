@@ -21,7 +21,7 @@ package org.apache.hudi.table;
 import org.apache.hudi.adapter.DataStreamSinkProviderAdapter;
 import org.apache.hudi.adapter.SupportsRowLevelDeleteAdapter;
 import org.apache.hudi.adapter.SupportsRowLevelUpdateAdapter;
-import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.client.model.HoodieFlinkInternalRow;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.configuration.OptionsInference;
@@ -32,6 +32,7 @@ import org.apache.hudi.util.ChangelogModes;
 import org.apache.hudi.util.DataModificationInfos;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.catalog.Column;
@@ -40,6 +41,7 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.List;
@@ -84,6 +86,7 @@ public class HoodieTableSink implements
       OptionsInference.setupClientId(conf);
 
       RowType rowType = (RowType) schema.toSinkRowDataType().notNull().getLogicalType();
+      TypeInformation<RowData> rowDataInfo = dataStream.getType();
 
       // bulk_insert mode
       if (OptionsResolver.isBulkInsertOperation(conf)) {
@@ -109,12 +112,10 @@ public class HoodieTableSink implements
         }
       }
 
+      // process dataStream and write corresponding files
       DataStream<Object> pipeline;
-      // bootstrap
-      final DataStream<HoodieRecord> hoodieRecordDataStream =
-          Pipelines.bootstrap(conf, rowType, dataStream, context.isBounded(), overwrite);
-      // write pipeline
-      pipeline = Pipelines.hoodieStreamWrite(conf, hoodieRecordDataStream);
+      final DataStream<HoodieFlinkInternalRow> hoodieRecordDataStream = Pipelines.bootstrap(conf, rowType, rowDataInfo, dataStream, context.isBounded(), overwrite);
+      pipeline = Pipelines.hoodieStreamWrite(conf, rowType, rowDataInfo, hoodieRecordDataStream);
       // compaction
       if (OptionsResolver.needsAsyncCompaction(conf)) {
         // use synchronous compaction for bounded source.
