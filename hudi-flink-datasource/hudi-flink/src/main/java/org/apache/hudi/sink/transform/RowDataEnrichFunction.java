@@ -29,15 +29,14 @@ import org.apache.hudi.util.StreamerUtil;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 /**
- * Function that converts Flink {@link RowData} into {@link HoodieFlinkRecord}, which extends Flink {@link Tuple}.
+ * Function that converts Flink {@link RowData} into {@link HoodieFlinkRecord}.
  */
-class RowDataEnrichFunction<I extends RowData, O extends Tuple> extends RichMapFunction<I, O> {
+class RowDataEnrichFunction<I extends RowData, O extends HoodieFlinkRecord> extends RichMapFunction<I, O> {
   private final Configuration config;
   private final RowType rowType;
   private transient Schema avroSchema;
@@ -59,8 +58,9 @@ class RowDataEnrichFunction<I extends RowData, O extends Tuple> extends RichMapF
 
   @Override
   public O map(I record) throws Exception {
+    // [HUDI-8969] Analyze how to get rid of excessive conversions
     GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, record);
     final HoodieKey hoodieKey = keyGenerator.getKey(gr);
-    return (O) new HoodieFlinkRecord(hoodieKey.getRecordKey(), hoodieKey.getPartitionPath(), record);
+    return (O) new HoodieFlinkRecord(record, hoodieKey.getRecordKey(), hoodieKey.getPartitionPath());
   }
 }

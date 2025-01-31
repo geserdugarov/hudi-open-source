@@ -117,8 +117,8 @@ public class HoodieTableSink implements
       DataStream<Object> pipeline;
       if (conf.getBoolean(FlinkOptions.WRITE_FAST_MODE)) {
         // optimized serde between Flink operators by conversion of `RowData` into `HoodieFlinkRecord`
-        final DataStream<HoodieFlinkRecord> rowDataStream = Pipelines.bootstrapRowData(conf, rowType, rowDataInfo, dataStream, overwrite);
-        pipeline = Pipelines.hoodieStreamWriteRowData(conf, rowType, rowDataStream);
+        final DataStream<HoodieFlinkRecord> rowDataStream = Pipelines.bootstrapRowData(conf, rowType, rowDataInfo, dataStream, context.isBounded(), overwrite);
+        pipeline = Pipelines.hoodieStreamWriteRowData(conf, rowType, rowDataInfo, rowDataStream);
       } else {
         final DataStream<HoodieRecord> hoodieRecordDataStream = Pipelines.bootstrap(conf, rowType, dataStream, context.isBounded(), overwrite);
         pipeline = Pipelines.hoodieStreamWrite(conf, hoodieRecordDataStream);

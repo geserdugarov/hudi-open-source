@@ -18,10 +18,10 @@
 
 package org.apache.hudi.sink.transform;
 
+import org.apache.hudi.client.model.HoodieFlinkRecord;
 import org.apache.hudi.common.util.RateLimiter;
 import org.apache.hudi.configuration.FlinkOptions;
 
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * {@link RowDataEnrichFunction} with rate limiting according to {@link FlinkOptions#WRITE_RATE_LIMIT}.
  */
-final class RowDataEnrichFunctionWithRateLimit<I extends RowData, O extends Tuple> extends RowDataEnrichFunction<I, O> {
+final class RowDataEnrichFunctionWithRateLimit<I extends RowData, O extends HoodieFlinkRecord> extends RowDataEnrichFunction<I, O> {
   /**
    * Total rate limit per second for the whole job set by config
    */

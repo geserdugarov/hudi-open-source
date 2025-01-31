@@ -16,17 +16,18 @@
  * limitations under the License.
  */
 
-package org.apache.hudi.sink.bucket;
+package org.apache.hudi.sink;
 
 import org.apache.hudi.client.model.HoodieFlinkRecord;
+import org.apache.hudi.common.model.BaseAvroPayload;
 import org.apache.hudi.common.model.HoodieAvroRecord;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieOperation;
 import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.exception.HoodieException;
-import org.apache.hudi.sink.StreamWriteFunction;
 import org.apache.hudi.sink.utils.PayloadCreation;
 import org.apache.hudi.util.RowDataToAvroConverters;
 import org.apache.hudi.util.StreamerUtil;
@@ -42,17 +43,16 @@ import org.apache.flink.util.Collector;
 import java.io.IOException;
 
 /**
- * A stream write function with simple bucket hash index for processing of {@link HoodieFlinkRecord},
- * which places records into buffer of {@link StreamWriteFunction}.
+ * Sink function to write incoming {@link HoodieFlinkRecord}s to the underneath filesystem.
  */
-final class BucketStreamWriteRowDataFunction<T extends HoodieFlinkRecord> extends BucketStreamWriteFunction<T> {
+public class StreamWriteRowDataFunction<I extends HoodieFlinkRecord> extends StreamWriteFunction<I> {
 
   private final RowType rowType;
   private transient Schema avroSchema;
   private transient RowDataToAvroConverters.RowDataToAvroConverter converter;
   private transient PayloadCreation payloadCreation;
 
-  BucketStreamWriteRowDataFunction(Configuration config, RowType rowType) {
+  public StreamWriteRowDataFunction(Configuration config, RowType rowType) {
     super(config);
     this.rowType = rowType;
   }
@@ -65,28 +65,34 @@ final class BucketStreamWriteRowDataFunction<T extends HoodieFlinkRecord> extend
     try {
       this.payloadCreation = PayloadCreation.instance(config);
     } catch (Exception ex) {
-      throw new HoodieException("Failed payload creation in BucketStreamWriteRowDataFunction", ex);
+      throw new HoodieException("Failed payload creation in StreamWriteRowDataFunction", ex);
     }
   }
 
   @Override
-  public void processElement(T income,
-                             ProcessFunction<T, Object>.Context context,
-                             Collector<Object> collector) throws Exception {
-    String recordKey = income.getRecordKey();
-    String partition = income.getPartitionPath();
-    RowData row = income.getRowData();
+  public void processElement(I record,
+                             ProcessFunction<I, Object>.Context ctx,
+                             Collector<Object> out) throws Exception {
+    RowData row = record.getRowData();
+    GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, row);
+    final HoodieKey hoodieKey = new HoodieKey(record.getRecordKey(), record.getPartitionPath());
 
-    final HoodieKey hoodieKey = new HoodieKey(recordKey, partition);
-    // [HUDI-8969] Analyze how to get rid of excessive conversions
-    HoodieRecordPayload payload = payloadCreation.createPayload(
-        (GenericRecord) this.converter.convert(this.avroSchema, row));
-    HoodieOperation operation = HoodieOperation.fromValue(row.getRowKind().toByteValue());
-    HoodieRecord record = new HoodieAvroRecord<>(hoodieKey, payload, operation);
+    // Processing partially switched to `HoodieFlinkRecord#operationType`.
+    // This is processing of delete records from `BucketAssignRowDataFunction::processHoodieFlinkRecord`
+    HoodieRecordPayload payload;
+    if (record.getOperationType().equals("D")) {
+      payload = payloadCreation.createDeletePayload((BaseAvroPayload) gr);
+    } else {
+      payload = payloadCreation.createPayload(gr);
+    }
+    // [HUDI-8968] Use opetationType uniformly instead of instantTime
+    HoodieOperation operation = HoodieOperation.fromName(record.getInstantTime());
+    HoodieRecord hoodieRecord = new HoodieAvroRecord<>(hoodieKey, payload, operation);
 
-    record.unseal();
-    record.setCurrentLocation(defineRecordLocation(hoodieKey, partition));
-    record.seal();
-    bufferRecord(record);
+    hoodieRecord.unseal();
+    hoodieRecord.setCurrentLocation(new HoodieRecordLocation(record.getInstantTime(), record.getFileId()));
+    hoodieRecord.seal();
+
+    bufferRecord(hoodieRecord);
   }
 }

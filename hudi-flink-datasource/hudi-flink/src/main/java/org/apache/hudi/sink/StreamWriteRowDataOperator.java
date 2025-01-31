@@ -16,32 +16,26 @@
  * limitations under the License.
  */
 
-package org.apache.hudi.sink.bucket;
+package org.apache.hudi.sink;
 
 import org.apache.hudi.client.model.HoodieFlinkRecord;
-import org.apache.hudi.configuration.FlinkOptions;
-import org.apache.hudi.configuration.OptionsResolver;
-import org.apache.hudi.exception.HoodieNotSupportedException;
 import org.apache.hudi.sink.common.AbstractWriteOperator;
 import org.apache.hudi.sink.common.WriteOperatorFactory;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.operators.StreamSink;
 import org.apache.flink.table.types.logical.RowType;
 
 /**
- * Operator for switching between different types of bucket index.
+ * Operator for {@link StreamSink}.
  */
-public final class BucketStreamWriteRowDataOperator extends AbstractWriteOperator<HoodieFlinkRecord> {
+public class StreamWriteRowDataOperator<I extends HoodieFlinkRecord> extends AbstractWriteOperator<I> {
 
-  BucketStreamWriteRowDataOperator(Configuration conf, RowType rowType) {
-    super(new BucketStreamWriteRowDataFunction<>(conf, rowType));
+  public StreamWriteRowDataOperator(Configuration conf, RowType rowType) {
+    super(new StreamWriteRowDataFunction<>(conf, rowType));
   }
 
-  public static WriteOperatorFactory<HoodieFlinkRecord> getFactory(Configuration conf, RowType rowType) throws HoodieNotSupportedException {
-    if (!OptionsResolver.isConsistentHashingBucketIndexType(conf)) {
-      return WriteOperatorFactory.instance(conf, new BucketStreamWriteRowDataOperator(conf, rowType));
-    } else {
-      throw new HoodieNotSupportedException("Currently, consistent hashing is not supported with enabled '" + FlinkOptions.WRITE_FAST_MODE.key() + "'");
-    }
+  public static <I extends HoodieFlinkRecord> WriteOperatorFactory<I> getFactory(Configuration conf, RowType rowType) {
+    return WriteOperatorFactory.instance(conf, new StreamWriteRowDataOperator<>(conf, rowType));
   }
 }
