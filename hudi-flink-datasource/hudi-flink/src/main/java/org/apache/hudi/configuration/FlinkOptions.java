@@ -681,7 +681,8 @@ public class FlinkOptions extends HoodieConfig {
       .booleanType()
       .defaultValue(false)
       .withDescription("Optimized Flink write into Hudi table, which uses customized serialization/deserialization. "
-          + "Note, that only SIMPLE BUCKET index is supported for now.");
+          + "Note, that this parameters doesn't change behavior for bulk insert and append mode. "
+          + "Also, consistent hashing index and bounded context are not supported for now.");
 
   // ------------------------------------------------------------------------
   //  Compaction Options
