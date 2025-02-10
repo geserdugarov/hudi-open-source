@@ -201,6 +201,17 @@ public class ITTestDataStreamWrite extends TestLogger {
         true,
         true,
         EXPECTED);
+
+    // check that there is no exceptions during the same with enabled index bootstrap
+    conf.setString(FlinkOptions.INDEX_BOOTSTRAP_ENABLED.key(), "true");
+    writeAndCheckExpected(
+        conf,
+        Option.empty(),
+        tableType + "_fast_mode",
+        2,
+        true,
+        true,
+        EXPECTED);
   }
 
   private void writeWithTransformerAndCheckExpected(

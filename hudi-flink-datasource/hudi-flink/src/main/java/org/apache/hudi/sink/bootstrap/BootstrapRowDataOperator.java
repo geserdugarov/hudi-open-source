@@ -21,25 +21,23 @@ package org.apache.hudi.sink.bootstrap;
 import org.apache.hudi.client.model.HoodieFlinkRecord;
 import org.apache.hudi.common.model.FileSlice;
 
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.binary.BinaryRowData;
 
 public class BootstrapRowDataOperator<I, O extends HoodieFlinkRecord> extends BootstrapOperator<I, O> {
 
-  private final BinaryRowData emptyRowData;
-
-  public BootstrapRowDataOperator(Configuration config, TypeInformation<RowData> rowTypeInfo) {
+  public BootstrapRowDataOperator(Configuration config) {
     super(config);
-    this.emptyRowData = new BinaryRowData(rowTypeInfo.getArity());
   }
 
   @Override
   protected void insertIndexStreamRecord(String recordKey, String partitionPath, FileSlice fileSlice) {
     output.collect(
         new StreamRecord(
-            new HoodieFlinkRecord(emptyRowData, recordKey, partitionPath, true)));
+            new HoodieFlinkRecord(
+                recordKey,
+                partitionPath,
+                fileSlice.getFileId(),
+                fileSlice.getBaseInstantTime())));
   }
 }

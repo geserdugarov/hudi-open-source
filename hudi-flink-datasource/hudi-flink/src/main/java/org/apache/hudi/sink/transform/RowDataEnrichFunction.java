@@ -61,6 +61,6 @@ class RowDataEnrichFunction<I extends RowData, O extends HoodieFlinkRecord> exte
     // [HUDI-8969] Analyze how to get rid of excessive conversions
     GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, record);
     final HoodieKey hoodieKey = keyGenerator.getKey(gr);
-    return (O) new HoodieFlinkRecord(record, hoodieKey.getRecordKey(), hoodieKey.getPartitionPath());
+    return (O) new HoodieFlinkRecord(hoodieKey.getRecordKey(), hoodieKey.getPartitionPath(), record);
   }
 }

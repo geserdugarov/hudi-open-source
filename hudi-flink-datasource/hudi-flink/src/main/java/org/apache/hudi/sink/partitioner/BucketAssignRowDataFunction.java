@@ -126,7 +126,7 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
           if (globalIndex) {
             // if partition path changes, emit a delete record for old partition path,
             // then update the index state using location with new partition path.
-            HoodieFlinkRecord deleteRecord = new HoodieFlinkRecord(row, recordKey, partitionFromState);
+            HoodieFlinkRecord deleteRecord = new HoodieFlinkRecord(recordKey, partitionFromState, row);
             deleteRecord.setOperationType("D");
             out.collect((O) deleteRecord);
           }

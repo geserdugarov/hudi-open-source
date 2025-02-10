@@ -37,8 +37,6 @@ public class HoodieFlinkRecord implements Serializable {
   // the number of fields without nesting
   protected static final int ARITY = 7;
 
-  private final RowData rowData;
-
   private final StringData recordKey;
 
   private final StringData partitionPath;
@@ -52,41 +50,48 @@ public class HoodieFlinkRecord implements Serializable {
    */
   private StringData operationType;
 
+  // there is no rowData for index record
   private BooleanValue isIndexRecord;
 
-  public HoodieFlinkRecord(RowData rowData, String recordKey, String partitionPath) {
-    this(rowData, recordKey, partitionPath, "", "", "", false);
+  private final RowData rowData;
+
+  public HoodieFlinkRecord(String recordKey, String partitionPath, RowData rowData) {
+    this(recordKey, partitionPath, "", "", "", false, rowData);
   }
 
-  public HoodieFlinkRecord(RowData rowData, String recordKey, String partitionPath, boolean isIndexRecord) {
-    this(rowData, recordKey, partitionPath, "", "", "", isIndexRecord);
+  public HoodieFlinkRecord(String recordKey, String partitionPath, boolean isIndexRecord, RowData rowData) {
+    this(recordKey, partitionPath, "", "", "", isIndexRecord, rowData);
   }
 
-  public HoodieFlinkRecord(RowData rowData,
-                           String recordKey,
+  public HoodieFlinkRecord(String recordKey, String partitionPath, String fileId, String instantTime) {
+    this(recordKey, partitionPath, fileId, instantTime, "", true, null);
+  }
+
+  public HoodieFlinkRecord(String recordKey,
                            String partitionPath,
                            String fileId,
                            String instantTime,
                            String operationType,
-                           boolean isIndexRecord) {
-    this.rowData = rowData;
+                           boolean isIndexRecord,
+                           RowData rowData) {
     this.recordKey = StringData.fromString(recordKey);
     this.partitionPath = StringData.fromString(partitionPath);
     this.fileId = StringData.fromString(fileId);
     this.instantTime = StringData.fromString(instantTime);
     this.operationType = StringData.fromString(operationType);
     this.isIndexRecord = new BooleanValue(isIndexRecord);
+    this.rowData = rowData;
   }
 
   public HoodieFlinkRecord copy() {
     return new HoodieFlinkRecord(
-        this.rowData,
         this.recordKey.toString(),
         this.partitionPath.toString(),
         this.fileId.toString(),
         this.instantTime.toString(),
         this.operationType.toString(),
-        this.isIndexRecord.getValue());
+        this.isIndexRecord.getValue(),
+        this.rowData);
   }
 
   public String getRecordKey() {
@@ -95,10 +100,6 @@ public class HoodieFlinkRecord implements Serializable {
 
   public String getPartitionPath() {
     return String.valueOf(partitionPath);
-  }
-
-  public RowData getRowData() {
-    return rowData;
   }
 
   public void setFileId(String fileId) {
@@ -131,5 +132,9 @@ public class HoodieFlinkRecord implements Serializable {
 
   public boolean isIndexRecord() {
     return isIndexRecord.getValue();
+  }
+
+  public RowData getRowData() {
+    return rowData;
   }
 }

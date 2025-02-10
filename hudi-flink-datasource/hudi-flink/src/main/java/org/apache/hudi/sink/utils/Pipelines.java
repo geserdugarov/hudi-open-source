@@ -311,7 +311,7 @@ public class Pipelines {
           .transform(
               "index_bootstrap_row_data",
               new HoodieFlinkRecordTypeInfo(rowType, rowDataInfo),
-              new BootstrapRowDataOperator<>(conf, rowDataInfo))
+              new BootstrapRowDataOperator<>(conf))
           .setParallelism(conf.getOptional(FlinkOptions.INDEX_BOOTSTRAP_TASKS).orElse(dataStreamRowData.getParallelism()))
           .uid(opUID("index_bootstrap", conf));
     }

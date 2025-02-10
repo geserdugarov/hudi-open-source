@@ -82,26 +82,43 @@ public class HoodieFlinkRecordSerializer extends TypeSerializer<HoodieFlinkRecor
 
   @Override
   public void serialize(HoodieFlinkRecord record, DataOutputView target) throws IOException {
-    rowDataSerializer.serialize(record.getRowData(), target);
+    boolean isIndexRecord = record.isIndexRecord();
+    target.writeBoolean(isIndexRecord);
     stringDataSerializer.serialize(StringData.fromString(record.getRecordKey()), target);
     stringDataSerializer.serialize(StringData.fromString(record.getPartitionPath()), target);
     stringDataSerializer.serialize(StringData.fromString(record.getFileId()), target);
     stringDataSerializer.serialize(StringData.fromString(record.getInstantTime()), target);
     stringDataSerializer.serialize(StringData.fromString(record.getOperationType()), target);
-    target.writeBoolean(record.isIndexRecord());
+    if (!isIndexRecord) {
+      rowDataSerializer.serialize(record.getRowData(), target);
+    }
   }
 
   @Override
   public HoodieFlinkRecord deserialize(DataInputView source) throws IOException {
-    RowData rowData = rowDataSerializer.deserialize(source);
+    boolean isIndexRecord = source.readBoolean();
     StringData recordKey = stringDataSerializer.deserialize(source);
     StringData partition = stringDataSerializer.deserialize(source);
-    HoodieFlinkRecord record = new HoodieFlinkRecord(rowData, recordKey.toString(), partition.toString());
-    record.setFileId(stringDataSerializer.deserialize(source).toString());
-    record.setInstantTime(stringDataSerializer.deserialize(source).toString());
-    record.setOperationType(stringDataSerializer.deserialize(source).toString());
-    if (source.readBoolean()) {
-      record.setAsIndexRecord();
+    StringData fileId = stringDataSerializer.deserialize(source);
+    StringData instantTime = stringDataSerializer.deserialize(source);
+    StringData operationType = stringDataSerializer.deserialize(source);
+    HoodieFlinkRecord record;
+    if (!isIndexRecord) {
+      RowData rowData = rowDataSerializer.deserialize(source);
+      record = new HoodieFlinkRecord(
+          recordKey.toString(),
+          partition.toString(),
+          fileId.toString(),
+          instantTime.toString(),
+          operationType.toString(),
+          isIndexRecord,
+          rowData);
+    } else {
+      record = new HoodieFlinkRecord(
+          recordKey.toString(),
+          partition.toString(),
+          fileId.toString(),
+          instantTime.toString());
     }
     return record;
   }
