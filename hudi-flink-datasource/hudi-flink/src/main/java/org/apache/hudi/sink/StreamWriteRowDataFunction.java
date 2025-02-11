@@ -86,7 +86,7 @@ public class StreamWriteRowDataFunction<I extends HoodieFlinkRecord> extends Str
       payload = payloadCreation.createPayload(gr);
     }
     // [HUDI-8968] Use operationType uniformly instead of instantTime
-    HoodieOperation operation = HoodieOperation.fromName(record.getInstantTime());
+    HoodieOperation operation = HoodieOperation.fromValue(row.getRowKind().toByteValue());
     HoodieRecord hoodieRecord = new HoodieAvroRecord<>(hoodieKey, payload, operation);
 
     hoodieRecord.unseal();
