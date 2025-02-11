@@ -55,12 +55,8 @@ public class HoodieFlinkRecord implements Serializable {
 
   private final RowData rowData;
 
-  public HoodieFlinkRecord(String recordKey, String partitionPath, RowData rowData) {
-    this(recordKey, partitionPath, "", "", "", false, rowData);
-  }
-
-  public HoodieFlinkRecord(String recordKey, String partitionPath, boolean isIndexRecord, RowData rowData) {
-    this(recordKey, partitionPath, "", "", "", isIndexRecord, rowData);
+  public HoodieFlinkRecord(String recordKey, String partitionPath, String operationType, RowData rowData) {
+    this(recordKey, partitionPath, "", "", operationType, false, rowData);
   }
 
   // constructor for index records without row data

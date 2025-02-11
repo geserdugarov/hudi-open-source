@@ -20,6 +20,7 @@ package org.apache.hudi.sink.transform;
 
 import org.apache.hudi.client.model.HoodieFlinkRecord;
 import org.apache.hudi.common.model.HoodieKey;
+import org.apache.hudi.common.model.HoodieOperation;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.keygen.KeyGenerator;
 import org.apache.hudi.keygen.factory.HoodieAvroKeyGeneratorFactory;
@@ -61,6 +62,10 @@ class RowDataEnrichFunction<I extends RowData, O extends HoodieFlinkRecord> exte
     // [HUDI-8969] Analyze how to get rid of excessive conversions
     GenericRecord gr = (GenericRecord) this.converter.convert(this.avroSchema, record);
     final HoodieKey hoodieKey = keyGenerator.getKey(gr);
-    return (O) new HoodieFlinkRecord(hoodieKey.getRecordKey(), hoodieKey.getPartitionPath(), record);
+    return (O) new HoodieFlinkRecord(
+        hoodieKey.getRecordKey(),
+        hoodieKey.getPartitionPath(),
+        HoodieOperation.fromValue(record.getRowKind().toByteValue()).getName(),
+        record);
   }
 }
