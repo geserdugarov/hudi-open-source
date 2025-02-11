@@ -40,6 +40,7 @@ import org.apache.hudi.sink.bucket.BucketBulkInsertWriterHelper;
 import org.apache.hudi.sink.bucket.BucketStreamWriteOperator;
 import org.apache.hudi.sink.bucket.BucketStreamWriteRowDataOperator;
 import org.apache.hudi.sink.bucket.ConsistentBucketAssignFunction;
+import org.apache.hudi.sink.bucket.ConsistentBucketAssignRowDataFunction;
 import org.apache.hudi.sink.bulk.BulkInsertWriteOperator;
 import org.apache.hudi.sink.bulk.RowDataKeyGen;
 import org.apache.hudi.sink.bulk.sort.SortOperatorGen;
@@ -406,7 +407,7 @@ public class Pipelines {
               .transform(
                   opName("consistent_bucket_assigner", conf),
                   TypeInformation.of(HoodieRecord.class),
-                  new ProcessOperator<>(new ConsistentBucketAssignFunction(conf)))
+                  new ProcessOperator<>(new ConsistentBucketAssignFunction<>(conf)))
               .uid(opUID("consistent_bucket_assigner", conf))
               .setParallelism(conf.getInteger(FlinkOptions.BUCKET_ASSIGN_TASKS))
               .keyBy(record -> record.getCurrentLocation().getFileId())
@@ -462,7 +463,24 @@ public class Pipelines {
               .setParallelism(conf.getInteger(FlinkOptions.WRITE_TASKS));
           break;
         case CONSISTENT_HASHING:
-          throw new HoodieNotSupportedException("Currently, consistent hashing is not supported with enabled '" + FlinkOptions.WRITE_FAST_MODE.key() + "'");
+          if (OptionsResolver.isInsertOverwrite(conf)) {
+            throw new HoodieException("Consistent hashing bucket index does not work with insert overwrite using FLINK engine. Use simple bucket index or Spark engine.");
+          }
+          sinkedDataStream = dataStream
+              .transform(
+                  opName("consistent_bucket_assigner_row_data", conf),
+                  new HoodieFlinkRecordTypeInfo(rowType, rowDataInfo),
+                  new ProcessOperator<>(new ConsistentBucketAssignRowDataFunction<>(conf)))
+              .uid(opUID("consistent_bucket_assigner_row_data", conf))
+              .setParallelism(conf.getInteger(FlinkOptions.BUCKET_ASSIGN_TASKS))
+              .keyBy(HoodieFlinkRecord::getFileId)
+              .transform(
+                  opName("consistent_bucket_write_row_data", conf),
+                  TypeInformation.of(Object.class),
+                  BucketStreamWriteRowDataOperator.getFactory(conf, rowType))
+              .uid(opUID("consistent_bucket_write_row_data", conf))
+              .setParallelism(conf.getInteger(FlinkOptions.WRITE_TASKS));
+          break;
         default:
           throw new HoodieNotSupportedException("Unknown bucket index engine type: " + bucketIndexEngineType);
       }

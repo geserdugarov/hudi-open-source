@@ -34,14 +34,12 @@ import org.apache.flink.table.types.logical.RowType;
 public final class BucketStreamWriteRowDataOperator extends AbstractWriteOperator<HoodieFlinkRecord> {
 
   BucketStreamWriteRowDataOperator(Configuration conf, RowType rowType) {
-    super(new BucketStreamWriteRowDataFunction<>(conf, rowType));
+    super(OptionsResolver.isConsistentHashingBucketIndexType(conf)
+        ? new ConsistentBucketStreamWriteRowDataFunction<>(conf, rowType)
+        : new BucketStreamWriteRowDataFunction<>(conf, rowType));
   }
 
   public static WriteOperatorFactory<HoodieFlinkRecord> getFactory(Configuration conf, RowType rowType) throws HoodieNotSupportedException {
-    if (!OptionsResolver.isConsistentHashingBucketIndexType(conf)) {
-      return WriteOperatorFactory.instance(conf, new BucketStreamWriteRowDataOperator(conf, rowType));
-    } else {
-      throw new HoodieNotSupportedException("Currently, consistent hashing is not supported with enabled '" + FlinkOptions.WRITE_FAST_MODE.key() + "'");
-    }
+    return WriteOperatorFactory.instance(conf, new BucketStreamWriteRowDataOperator(conf, rowType));
   }
 }

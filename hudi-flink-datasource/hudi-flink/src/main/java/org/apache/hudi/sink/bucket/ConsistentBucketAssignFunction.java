@@ -57,15 +57,15 @@ import java.util.concurrent.TimeUnit;
 /**
  * The function to tag each incoming record with a location of a file based on consistent bucket index.
  */
-public class ConsistentBucketAssignFunction extends ProcessFunction<HoodieRecord, HoodieRecord> implements CheckpointedFunction {
+public class ConsistentBucketAssignFunction<I, O> extends ProcessFunction<I, O> implements CheckpointedFunction {
 
   private static final Logger LOG = LoggerFactory.getLogger(ConsistentBucketAssignFunction.class);
 
   private final Configuration config;
-  private final List<String> indexKeyFields;
+  protected final List<String> indexKeyFields;
   private final int bucketNum;
   private transient HoodieFlinkWriteClient writeClient;
-  private transient Map<String, ConsistentBucketIdentifier> partitionToIdentifier;
+  protected transient Map<String, ConsistentBucketIdentifier> partitionToIdentifier;
   private transient String lastRefreshInstant;
   private final int maxRetries = 10;
   private final long maxWaitTimeInMs = 1000;
@@ -89,7 +89,8 @@ public class ConsistentBucketAssignFunction extends ProcessFunction<HoodieRecord
   }
 
   @Override
-  public void processElement(HoodieRecord record, Context context, Collector<HoodieRecord> collector) throws Exception {
+  public void processElement(I income, Context context, Collector<O> collector) throws Exception {
+    final HoodieRecord record = (HoodieRecord) income;
     final HoodieKey hoodieKey = record.getKey();
     final String partition = hoodieKey.getPartitionPath();
 
@@ -102,10 +103,10 @@ public class ConsistentBucketAssignFunction extends ProcessFunction<HoodieRecord
     record.unseal();
     record.setCurrentLocation(new HoodieRecordLocation("U", FSUtils.createNewFileId(node.getFileIdPrefix(), 0)));
     record.seal();
-    collector.collect(record);
+    collector.collect((O) record);
   }
 
-  private ConsistentBucketIdentifier getBucketIdentifier(String partition) {
+  protected ConsistentBucketIdentifier getBucketIdentifier(String partition) {
     return partitionToIdentifier.computeIfAbsent(partition, p -> {
       // NOTE: If the metadata does not exist, there maybe concurrent creation of the metadata. And we allow multiple subtask
       // trying to create the same metadata as the initial metadata always has the same content for the same partition.
