@@ -51,7 +51,7 @@ public class HoodieFlinkRecord implements Serializable {
   private StringData operationType;
 
   // there is no rowData for index record
-  private BooleanValue isIndexRecord;
+  private final BooleanValue isIndexRecord;
 
   private final RowData rowData;
 
@@ -63,6 +63,7 @@ public class HoodieFlinkRecord implements Serializable {
     this(recordKey, partitionPath, "", "", "", isIndexRecord, rowData);
   }
 
+  // constructor for index records without row data
   public HoodieFlinkRecord(String recordKey, String partitionPath, String fileId, String instantTime) {
     this(recordKey, partitionPath, fileId, instantTime, "", true, null);
   }
@@ -81,17 +82,6 @@ public class HoodieFlinkRecord implements Serializable {
     this.operationType = StringData.fromString(operationType);
     this.isIndexRecord = new BooleanValue(isIndexRecord);
     this.rowData = rowData;
-  }
-
-  public HoodieFlinkRecord copy() {
-    return new HoodieFlinkRecord(
-        this.recordKey.toString(),
-        this.partitionPath.toString(),
-        this.fileId.toString(),
-        this.instantTime.toString(),
-        this.operationType.toString(),
-        this.isIndexRecord.getValue(),
-        this.rowData);
   }
 
   public String getRecordKey() {
@@ -124,10 +114,6 @@ public class HoodieFlinkRecord implements Serializable {
 
   public String getOperationType() {
     return String.valueOf(operationType);
-  }
-
-  public void setAsIndexRecord() {
-    this.isIndexRecord = BooleanValue.TRUE;
   }
 
   public boolean isIndexRecord() {

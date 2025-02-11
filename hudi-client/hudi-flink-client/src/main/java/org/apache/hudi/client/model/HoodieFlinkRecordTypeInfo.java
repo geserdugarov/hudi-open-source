@@ -33,8 +33,6 @@ public class HoodieFlinkRecordTypeInfo extends TypeInformation<HoodieFlinkRecord
 
   private static final long serialVersionUID = 1L;
 
-  private static final int ARITY = HoodieFlinkRecord.ARITY;
-
   private final RowType rowType;
 
   private final TypeInformation<RowData> rowDataInfo;
@@ -56,12 +54,12 @@ public class HoodieFlinkRecordTypeInfo extends TypeInformation<HoodieFlinkRecord
 
   @Override
   public int getArity() {
-    return ARITY;
+    return HoodieFlinkRecord.ARITY;
   }
 
   @Override
   public int getTotalFields() {
-    return ARITY - 1 + rowDataInfo.getArity();
+    return HoodieFlinkRecord.ARITY - 1 + rowDataInfo.getArity();
   }
 
   @Override

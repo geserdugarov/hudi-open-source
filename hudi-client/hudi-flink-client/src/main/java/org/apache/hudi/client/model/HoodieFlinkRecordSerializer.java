@@ -130,12 +130,16 @@ public class HoodieFlinkRecordSerializer extends TypeSerializer<HoodieFlinkRecor
 
   @Override
   public void copy(DataInputView source, DataOutputView target) throws IOException {
-    rowDataSerializer.copy(source, target);
+    boolean isIndexRecord = source.readBoolean();
+    target.writeBoolean(isIndexRecord);
     stringDataSerializer.copy(source, target);
     stringDataSerializer.copy(source, target);
     stringDataSerializer.copy(source, target);
     stringDataSerializer.copy(source, target);
-    target.writeBoolean(source.readBoolean());
+    stringDataSerializer.copy(source, target);
+    if (!isIndexRecord) {
+      rowDataSerializer.copy(source, target);
+    }
   }
 
   @Override

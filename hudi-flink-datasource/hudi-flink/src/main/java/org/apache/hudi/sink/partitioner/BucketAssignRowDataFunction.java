@@ -123,6 +123,7 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
         // Set up the instant time as "U" to mark the bucket as an update bucket.
         String partitionFromState = indexStateValue.getField(0).toString();
         if (!Objects.equals(partitionFromState, partition)) {
+          // [HUDI-8996] No delete records for Flink upsert if partition path changed
           if (globalIndex) {
             // if partition path changes, emit a delete record for old partition path,
             // then update the index state using location with new partition path.
