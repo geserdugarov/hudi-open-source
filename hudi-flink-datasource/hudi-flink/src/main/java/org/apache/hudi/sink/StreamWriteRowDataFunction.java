@@ -81,11 +81,11 @@ public class StreamWriteRowDataFunction<I extends HoodieFlinkRecord> extends Str
     // This is processing of delete records from `BucketAssignRowDataFunction::processHoodieFlinkRecord`
     HoodieRecordPayload payload;
     if (record.getOperationType().equals("D")) {
-      payload = payloadCreation.createDeletePayload((BaseAvroPayload) gr);
+      payload = payloadCreation.createDeletePayload((BaseAvroPayload) payloadCreation.createPayload(gr));
     } else {
       payload = payloadCreation.createPayload(gr);
     }
-    // [HUDI-8968] Use opetationType uniformly instead of instantTime
+    // [HUDI-8968] Use operationType uniformly instead of instantTime
     HoodieOperation operation = HoodieOperation.fromName(record.getInstantTime());
     HoodieRecord hoodieRecord = new HoodieAvroRecord<>(hoodieKey, payload, operation);
 

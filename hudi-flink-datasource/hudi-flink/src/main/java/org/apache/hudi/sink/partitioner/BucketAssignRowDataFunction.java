@@ -34,7 +34,7 @@ import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -52,11 +52,11 @@ import java.util.Objects;
 public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O extends HoodieFlinkRecord> extends BucketAssignFunction<K, I, O> {
 
   /**
-   * State for known record keys, which structured as Tuple(partition, fileId, instantTime).
+   * State for known record keys, which structured as Tuple(partition, fileId).
    * If record key is in the state, then update location from the state.
    * Otherwise, use the {@link BucketAssigner} to generate a new bucket ID.
    */
-  private ValueState<Tuple3<StringData, StringData, StringData>> indexState;
+  private ValueState<Tuple2<StringData, StringData>> indexState;
 
   public BucketAssignRowDataFunction(Configuration config) {
     super(config);
@@ -64,11 +64,10 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
 
   @Override
   public void initializeState(FunctionInitializationContext context) {
-    ValueStateDescriptor indexStateDesc =
+    ValueStateDescriptor<Tuple2<StringData, StringData>> indexStateDesc =
         new ValueStateDescriptor<>(
             "indexState",
             new TupleTypeInfo<>(
-                StringDataTypeInfo.INSTANCE,
                 StringDataTypeInfo.INSTANCE,
                 StringDataTypeInfo.INSTANCE));
     double ttl = conf.getDouble(FlinkOptions.INDEX_STATE_TTL) * 24 * 60 * 60 * 1000;
@@ -99,10 +98,9 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
   public void processElement(I value, Context ctx, Collector<O> out) throws Exception {
     if (value.isIndexRecord()) {
       this.indexState.update(
-          new Tuple3<>(
+          new Tuple2<>(
               StringData.fromString(value.getPartitionPath()),
-              StringData.fromString(value.getFileId()),
-              StringData.fromString(value.getInstantTime())));
+              StringData.fromString(value.getFileId())));
     } else {
       processHoodieFlinkRecord(value, out);
     }
@@ -118,22 +116,23 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
       // Only changing records need looking up the index for the location,
       // append only records are always recognized as INSERT.
       // Structured as Tuple(partition, fileId, instantTime).
-      Tuple3<StringData, StringData, StringData> indexStateValue = indexState.value();
+      Tuple2<StringData, StringData> indexStateValue = indexState.value();
       if (indexStateValue != null) {
         // Set up the instant time as "U" to mark the bucket as an update bucket.
         String partitionFromState = indexStateValue.getField(0).toString();
+        String fileIdFromState = indexStateValue.getField(1).toString();
         if (!Objects.equals(partitionFromState, partition)) {
           // [HUDI-8996] No delete records for Flink upsert if partition path changed
           if (globalIndex) {
             // if partition path changes, emit a delete record for old partition path,
             // then update the index state using location with new partition path.
-            HoodieFlinkRecord deleteRecord = new HoodieFlinkRecord(recordKey, partitionFromState, row);
-            deleteRecord.setOperationType("D");
+            HoodieFlinkRecord deleteRecord =
+                new HoodieFlinkRecord(recordKey, partitionFromState, fileIdFromState, "U", "D", false, row);
             out.collect((O) deleteRecord);
           }
           location = getNewRecordLocation(partition);
         } else {
-          location = new HoodieRecordLocation("U", indexStateValue.getField(1).toString(), HoodieRecordLocation.INVALID_POSITION);
+          location = new HoodieRecordLocation("U", fileIdFromState, HoodieRecordLocation.INVALID_POSITION);
           this.bucketAssigner.addUpdate(partition, location.getFileId());
         }
       } else {
@@ -141,10 +140,9 @@ public class BucketAssignRowDataFunction<K, I extends HoodieFlinkRecord, O exten
       }
       // always refresh the index
       this.indexState.update(
-          new Tuple3<>(
+          new Tuple2<>(
               StringData.fromString(partition),
-              StringData.fromString(location.getFileId()),
-              StringData.fromString(location.getInstantTime())));
+              StringData.fromString(location.getFileId())));
     } else {
       location = getNewRecordLocation(partition);
     }
