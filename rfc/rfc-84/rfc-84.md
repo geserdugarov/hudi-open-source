@@ -24,15 +24,14 @@
 ## Approvers
 
 - @danny0405
-- @xiarixiaoyao
-- @yuzhaojing
 - @wombatu-kun
+- @yuzhaojing
 
 ## Status
 
 Design is under discussion.
 
-Implementation is ready for non bucket and simple bucket, and wait for review:
+Main part of implementation is ready, and is under review:
 https://github.com/apache/hudi/pull/12796
 
 JIRA: [HUDI-8799](https://issues.apache.org/jira/browse/HUDI-8799)
@@ -57,16 +56,6 @@ And also it allows to implement future optimizations with direct write of Flink 
 In Flink pipelines we could keep internal `RowData` together with only necessary Hudi metadata.
 And these metadata should be added considering Flink data types.
 
-There are seven different categories of 
-[supported data types](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/dev/datastream/fault-tolerance/serialization/types_serialization/) 
-in Flink: tuples, POJOs, primitive types, regular classes, values, Hadoop writables, and special types. 
-Among presented data types, tuples are less flexible, but offer the best performance. 
-In this case there is no need in custom type description and custom serializer, and we could use already presented in Flink 
-[`TupleTypeInfo`](https://github.com/apache/flink/blob/b1fe7b4099497f02b4658df7c3de8e45b62b7e21/flink-core/src/main/java/org/apache/flink/api/java/typeutils/TupleTypeInfo.java) 
-and 
-[`TupleSerializer`](https://github.com/apache/flink/blob/b1fe7b4099497f02b4658df7c3de8e45b62b7e21/flink-core/src/main/java/org/apache/flink/api/java/typeutils/runtime/TupleSerializer.java).
-(All links to Flink documentation or code are provided for version 1.20.) 
-
 ## Implementation
 
 To prepare implementation plan we should start from current state review.
@@ -89,7 +78,7 @@ which uses
 or 
 [`partitionCustom()`](https://github.com/apache/flink/blob/b1fe7b4099497f02b4658df7c3de8e45b62b7e21/flink-streaming-java/src/main/java/org/apache/flink/streaming/api/datastream/DataStream.java#L398-L402), 
 which expects user defined custom partitioner, couldn't be chained.
-Those partitioners are marked as purple blocks in the schema, and at those places we will face high serialization/deserialization costs.
+Those partitioners are marked as purple blocks in the schema above, and at those places we will face high serialization/deserialization costs.
 
 ### Read
 
@@ -98,7 +87,7 @@ As for reading of Hudi table by Flink, at the first blush there is no need to im
 ### Metadata
 
 We start writing into Hudi table from `DataStream<RowData>`.
-Necessary for processing Hudi metadata is marked by red color on the schema above.
+Hudi metadata, which is necessary for processing in different operators, is marked by red color on the schema above.
 We could use 
 [`map()`](https://github.com/apache/flink/blob/b1fe7b4099497f02b4658df7c3de8e45b62b7e21/flink-streaming-java/src/main/java/org/apache/flink/streaming/api/datastream/DataStream.java#L611-L614)
 transformation to convert incoming `RowData` into a new object `HoodieFlinkInternalRow`.
@@ -177,8 +166,6 @@ To describe how to serialize and deserialize it properly, we also need to implem
 ```Java
 public class HoodieFlinkInternalRowTypeInfo extends TypeInformation<HoodieFlinkInternalRow> {
 
-  private static final int ARITY = HoodieFlinkInternalRow.ARITY;
-
   private final RowType rowType;
 
   private final TypeInformation<RowData> rowDataInfo;
@@ -195,10 +182,14 @@ public class HoodieFlinkInternalRowTypeInfo extends TypeInformation<HoodieFlinkI
   public boolean isTupleType() {}
 
   @Override
-  public int getArity() {}
+  public int getArity() {
+    return HoodieFlinkInternalRow.ARITY;
+  }
 
   @Override
-  public int getTotalFields() {}
+  public int getTotalFields() {
+    return HoodieFlinkInternalRow.ARITY - 1 + rowDataInfo.getArity();
+  }
 
   @Override
   public Class<HoodieFlinkInternalRow> getTypeClass() {}
@@ -309,7 +300,18 @@ public class HoodieFlinkInternalRowSerializer extends TypeSerializer<HoodieFlink
   public HoodieFlinkInternalRow deserialize(HoodieFlinkInternalRow reuse, DataInputView source) throws IOException {}
 
   @Override
-  public void copy(DataInputView source, DataOutputView target) throws IOException {}
+  public void copy(DataInputView source, DataOutputView target) throws IOException {
+    boolean isIndexRecord = source.readBoolean();
+    target.writeBoolean(isIndexRecord);
+    stringDataSerializer.copy(source, target);
+    stringDataSerializer.copy(source, target);
+    stringDataSerializer.copy(source, target);
+    stringDataSerializer.copy(source, target);
+    stringDataSerializer.copy(source, target);
+    if (!isIndexRecord) {
+      rowDataSerializer.copy(source, target);
+    }
+  }
 
   @Override
   public boolean equals(Object obj) {}
@@ -326,15 +328,10 @@ public class HoodieFlinkInternalRowSerializer extends TypeSerializer<HoodieFlink
 
 1. Key generators are hardly coupled with Avro `GenericRecord`. 
    Therefore, to support all key generators we will have to do intermediate conversion into Avro in operator, that is responsible for getting Hudi key.
-   But for some cases it would be possible to use `RowDataKeyGen` directly on `RowData`.
-   Further, it would be great to revise key generators hierarchy as a separate task without binding to this RFC.
+   But for main use cases it is possible to use `RowDataKeyGen` directly on `RowData`.
 2. Payloads creation is also hardly coupled with Avro `GenericRecord`. 
    Similar to the previous point, there would be undesirable intermediate conversion into Avro.
-   To confirm the need of this trade off, performance measure using benchmarks with profiling will be performed.
-3. For preserving of current behavior, proposed optimizations could be tied to corresponding configuration parameter, and will be turned off by default.
-   This means that we will have to add some new classes, which will extend corresponding ones, for instance, `BootstrapRowDataOperator extends BootstrapOperator`.
-   It will lead to not possible restore from Flink checkpoint, which was done using previous behavior, and continue from this checkpoint using new behavior.
-   Flink job restart will be needed to switch to new behavior.
+   It is a huge work, and should be done under separate RFC. 
 
 ## Rollout/Adoption Plan
 
@@ -342,14 +339,11 @@ public class HoodieFlinkInternalRowSerializer extends TypeSerializer<HoodieFlink
   - Better performance of Flink write into Hudi for main scenarios. 
     Total write time [decreased by 20-30%](https://github.com/apache/hudi/pull/12796).
 - If we are changing behavior how will we phase out the older behavior?
-  - New behavior could be turned on by enabling corresponding setting, by default, previous behavior will be preserved.
-  - We could turn on new behavior by default in the following releases after proper testing.
+  - It is an internal processing, and there is no plan to rollback older behavior without reverting changes.
 - If we need special migration tools, describe them here.
-  - For such kind of changes, there is no need in special migration tools. 
-    But if we consider preserving previous and new behavior simultaneously, 
-    then Flink restore from old checkpoints with new behavior wouldn't be possible due to changed classes in operator states.
+  - For such kind of changes, there is no need in special migration tools.
 - When will we remove the existing behavior
-  - Previous behavior could be removed after testing that there is no problem with new behavior. 
+  - Previous behavior will be removed with proposed changes. 
 
 ## Test Plan
 
