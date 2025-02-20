@@ -168,11 +168,8 @@ public class HoodieFlinkInternalRowTypeInfo extends TypeInformation<HoodieFlinkI
 
   private final RowType rowType;
 
-  private final TypeInformation<RowData> rowDataInfo;
-
-  public HoodieFlinkInternalRowTypeInfo(RowType rowType, TypeInformation<RowData> rowDataInfo) {
+  public HoodieFlinkInternalRowTypeInfo(RowType rowType) {
     this.rowType = rowType;
-    this.rowDataInfo = rowDataInfo;
   }
 
   @Override
@@ -186,9 +183,12 @@ public class HoodieFlinkInternalRowTypeInfo extends TypeInformation<HoodieFlinkI
     return HoodieFlinkInternalRow.ARITY;
   }
 
+  /**
+   * Used only in Flink `CompositeType`, not used in this type
+   */
   @Override
   public int getTotalFields() {
-    return HoodieFlinkInternalRow.ARITY - 1 + rowDataInfo.getArity();
+    return HoodieFlinkInternalRow.ARITY;
   }
 
   @Override
@@ -337,7 +337,7 @@ public class HoodieFlinkInternalRowSerializer extends TypeSerializer<HoodieFlink
 
 - What impact (if any) will there be on existing users?
   - Better performance of Flink write into Hudi for main scenarios. 
-    Total write time [decreased by 20-30%](https://github.com/apache/hudi/pull/12796).
+    Total write time [decreased up to 25%](https://github.com/apache/hudi/pull/12796).
 - If we are changing behavior how will we phase out the older behavior?
   - It is an internal processing, and there is no plan to rollback older behavior without reverting changes.
 - If we need special migration tools, describe them here.
@@ -348,5 +348,4 @@ public class HoodieFlinkInternalRowSerializer extends TypeSerializer<HoodieFlink
 ## Test Plan
 
 This RFC will be tested by running of TPC-H benchmark. 
-Also corresponding integration tests will be added.
-Existing set of test cases will allow to check that nothing is broken from previous behavior.
+Existing set of test cases will allow to check that nothing is broken due to change of default behavior.
