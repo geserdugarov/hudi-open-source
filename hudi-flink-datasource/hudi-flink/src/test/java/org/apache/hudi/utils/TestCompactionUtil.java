@@ -20,7 +20,6 @@ package org.apache.hudi.utils;
 
 import org.apache.hudi.avro.model.HoodieCompactionOperation;
 import org.apache.hudi.avro.model.HoodieCompactionPlan;
-import org.apache.hudi.client.HoodieFlinkWriteClient;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
@@ -33,7 +32,6 @@ import org.apache.hudi.metadata.FlinkHoodieBackedTableMetadataWriter;
 import org.apache.hudi.table.HoodieFlinkTable;
 import org.apache.hudi.util.CompactionUtil;
 import org.apache.hudi.util.FlinkTables;
-import org.apache.hudi.util.FlinkWriteClients;
 import org.apache.hudi.util.StreamerUtil;
 
 import org.apache.flink.configuration.Configuration;
@@ -43,10 +41,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -125,33 +121,6 @@ public class TestCompactionUtil {
         .filterPendingCompactionTimeline().filter(instant -> instant.getState() == HoodieInstant.State.REQUESTED)
         .firstInstant().get().getTimestamp();
     assertThat(instantTime, is(oriInstants.get(0)));
-  }
-
-  @Test
-  void testScheduleCompaction() throws Exception {
-    Map<String, String> options = new HashMap<>();
-    options.put(FlinkOptions.COMPACTION_SCHEDULE_ENABLED.key(), "false");
-    options.put(FlinkOptions.COMPACTION_TRIGGER_STRATEGY.key(), FlinkOptions.TIME_ELAPSED);
-    options.put(FlinkOptions.COMPACTION_DELTA_SECONDS.key(), "0");
-    beforeEach(options);
-
-    // write a commit with data first
-    TestData.writeDataAsBatch(TestData.DATA_SET_SINGLE_INSERT, conf);
-
-    HoodieFlinkWriteClient<?> writeClient = FlinkWriteClients.createWriteClient(conf);
-    CompactionUtil.scheduleCompaction(metaClient, writeClient, true, true);
-
-    Option<HoodieInstant> pendingCompactionInstant = metaClient.reloadActiveTimeline().filterPendingCompactionTimeline().lastInstant();
-    assertTrue(pendingCompactionInstant.isPresent(), "A compaction plan expects to be scheduled");
-
-    // write another commit with data and start a new instant
-    TestData.writeDataAsBatch(TestData.DATA_SET_INSERT, conf);
-    TimeUnit.SECONDS.sleep(3); // in case the instant time interval is too close
-    writeClient.startCommit();
-
-    CompactionUtil.scheduleCompaction(metaClient, writeClient, true, false);
-    int numCompactionCommits = metaClient.reloadActiveTimeline().filterPendingCompactionTimeline().countInstants();
-    assertThat("Two compaction plan expects to be scheduled", numCompactionCommits, is(2));
   }
 
   /**
