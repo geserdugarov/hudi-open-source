@@ -27,19 +27,17 @@ public class BucketIndexUtil {
 
   /**
    * This method is used to get the partition index calculation function of a bucket.
-   * "partition.hashCode() / (parallelism / bucketNum) * bucketNum" divides the parallelism into
-   * sub-intervals of length bucket_num, different partitions will be mapped to different sub-interval,
-   * ensure that the data across multiple partitions is evenly distributed.
+   * Combined hash of a pair of bucketId and partition path is used to divided buckets between writers
+   * and prevent different load on writers in the case if write load among partitions is skewed,
+   * for instance, if load on today partition is high, and for historical partitions is low.
    *
-   * @param bucketNum   Bucket number per partition
    * @param parallelism Parallelism of the task
    * @return The partition index of this bucket.
    */
-  public static Functions.Function2<String, Integer, Integer> getPartitionIndexFunc(int bucketNum, int parallelism) {
+  public static Functions.Function2<String, Integer, Integer> getPartitionIndexFunc(int parallelism) {
     return (partition, curBucket) -> {
-      int partitionIndex = (partition.hashCode() & Integer.MAX_VALUE) % parallelism * bucketNum;
-      int globalIndex = partitionIndex + curBucket;
-      return globalIndex % parallelism;
+      int combinedHash = (31 * curBucket + partition.hashCode()) & Integer.MAX_VALUE;
+      return combinedHash % parallelism;
     };
   }
 }

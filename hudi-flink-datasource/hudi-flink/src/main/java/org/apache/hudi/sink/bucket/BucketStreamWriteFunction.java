@@ -102,7 +102,7 @@ public class BucketStreamWriteFunction extends StreamWriteFunction {
     this.parallelism = getRuntimeContext().getNumberOfParallelSubtasks();
     this.bucketIndex = new HashMap<>();
     this.incBucketIndex = new HashSet<>();
-    this.partitionIndexFunc = BucketIndexUtil.getPartitionIndexFunc(bucketNum, parallelism);
+    this.partitionIndexFunc = BucketIndexUtil.getPartitionIndexFunc(parallelism);
     this.isInsertOverwrite = OptionsResolver.isInsertOverwrite(config);
   }
 

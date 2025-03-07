@@ -74,7 +74,7 @@ public class TestBucketIndexUtil {
   void testPartition(int parallelism, int bucketNumber, boolean partitioned) {
     Map<Integer, Integer> parallelism2TaskCount = new HashMap<>();
     final Functions.Function2<String, Integer, Integer> partitionIndexFunc =
-        BucketIndexUtil.getPartitionIndexFunc(bucketNumber, parallelism);
+        BucketIndexUtil.getPartitionIndexFunc(parallelism);
     initPartitionData(parallelism2TaskCount, bucketNumber, partitionIndexFunc);
     checkResult(parallelism2TaskCount, parallelism, bucketNumber, partitioned);
   }
@@ -84,7 +84,7 @@ public class TestBucketIndexUtil {
   void testNoPartition(int parallelism, int bucketNumber, boolean partitioned) {
     Map<Integer, Integer> parallelism2TaskCount = new HashMap<>();
     final Functions.Function2<String, Integer, Integer> partitionIndexFunc =
-        BucketIndexUtil.getPartitionIndexFunc(bucketNumber, parallelism);
+        BucketIndexUtil.getPartitionIndexFunc(parallelism);
     initNoPartitionData(parallelism2TaskCount, bucketNumber, partitionIndexFunc);
     checkResult(parallelism2TaskCount, parallelism, bucketNumber, partitioned);
   }
