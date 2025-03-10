@@ -40,4 +40,12 @@ public class BucketIndexUtil {
       return combinedHash % parallelism;
     };
   }
+
+  public static Functions.Function2<String, Integer, Integer> getPartitionIndexFuncOldWay(int bucketNum, int parallelism) {
+    return (partition, curBucket) -> {
+      int partitionIndex = (partition.hashCode() & Integer.MAX_VALUE) % parallelism * bucketNum;
+      int globalIndex = partitionIndex + curBucket;
+      return globalIndex % parallelism;
+    };
+  }
 }
