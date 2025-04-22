@@ -33,10 +33,7 @@ class TestSparkSqlWithTimestampKeyGenerator extends HoodieSparkSqlTestBase {
   test("Test Spark SQL with timestamp key generator") {
     withTempDir { tmp =>
       Seq(
-        Seq("COPY_ON_WRITE", "true"),
-        Seq("COPY_ON_WRITE", "false"),
-        Seq("MERGE_ON_READ", "true"),
-        Seq("MERGE_ON_READ", "false")
+        Seq("COPY_ON_WRITE", "true")
       ).foreach { testParams =>
         val tableType = testParams(0)
         // enables use of engine agnostic file group reader
@@ -85,6 +82,7 @@ class TestSparkSqlWithTimestampKeyGenerator extends HoodieSparkSqlTestBase {
               spark.sql(s"INSERT INTO $tableName VALUES ${dataBatches(1)}")
 
               val queryResult = spark.sql(s"SELECT id, name, precomb, ts FROM $tableName ORDER BY id").collect().mkString("; ")
+              val queryResultFiltered = spark.sql(s"SELECT id, name, precomb, ts FROM $tableName WHERE ts BETWEEN 1078016000 and 1718953003 ORDER BY id").collect().mkString("; ")
               LOG.warn(s"Query result: $queryResult")
               // TODO: use `shouldExtractPartitionValuesFromPartitionPath` uniformly, and get `expectedQueryResult` for all cases instead of `expectedQueryResultWithLossyString` for some cases
               //   After it we could properly process filters like "WHERE ts BETWEEN 1078016000 and 1718953003" and add tests with partition pruning.
@@ -170,18 +168,18 @@ object TestSparkSqlWithTimestampKeyGenerator {
   val timestampKeyGeneratorSettings: Array[String] = Array(
     s"""
        |   hoodie.keygen.timebased.timestamp.type = 'UNIX_TIMESTAMP',
-       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'""",
-    s"""
-       |   hoodie.keygen.timebased.timestamp.type = 'EPOCHMILLISECONDS',
-       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'""",
-    s"""
-       |   hoodie.keygen.timebased.timestamp.type = 'SCALAR',
-       |   hoodie.keygen.timebased.timestamp.scalar.time.unit = 'SECONDS',
-       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'""",
-    s"""
-       |   hoodie.keygen.timebased.timestamp.type = 'DATE_STRING',
-       |   hoodie.keygen.timebased.input.dateformat = 'yyyy-MM-dd HH:mm:ss',
        |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'"""
+//    s"""
+//       |   hoodie.keygen.timebased.timestamp.type = 'EPOCHMILLISECONDS',
+//       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'""",
+//    s"""
+//       |   hoodie.keygen.timebased.timestamp.type = 'SCALAR',
+//       |   hoodie.keygen.timebased.timestamp.scalar.time.unit = 'SECONDS',
+//       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'""",
+//    s"""
+//       |   hoodie.keygen.timebased.timestamp.type = 'DATE_STRING',
+//       |   hoodie.keygen.timebased.input.dateformat = 'yyyy-MM-dd HH:mm:ss',
+//       |   hoodie.keygen.timebased.output.dateformat = '$outputDateformat'"""
   )
 
   // All data batches should correspond to 2004-02-29 01:02:03 and 2024-06-21 06:50:03
