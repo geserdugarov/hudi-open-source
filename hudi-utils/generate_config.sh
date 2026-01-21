@@ -21,19 +21,19 @@ VERSION=1.1.0
 SCALA_VERSION=2.12
 
 JARS=(
-"$HOME/.m2/repository/org/apache/hudi/hudi-utilities-slim-bundle_$SCALA_VERSION/$VERSION/hudi-utilities-slim-bundle_$SCALA_VERSION-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-spark3.5-bundle_$SCALA_VERSION/$VERSION/hudi-spark3.5-bundle_$SCALA_VERSION-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-cli-bundle_$SCALA_VERSION/$VERSION/hudi-cli-bundle_$SCALA_VERSION-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-flink1.20-bundle/$VERSION/hudi-flink1.20-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-kafka-connect-bundle/$VERSION/hudi-kafka-connect-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-presto-bundle/$VERSION/hudi-presto-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-trino-bundle/$VERSION/hudi-trino-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-hadoop-mr-bundle/$VERSION/hudi-hadoop-mr-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-hive-sync-bundle/$VERSION/hudi-hive-sync-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-gcp-bundle/$VERSION/hudi-gcp-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-aws-bundle/$VERSION/hudi-aws-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-datahub-sync-bundle/$VERSION/hudi-datahub-sync-bundle-$VERSION.jar"
-"$HOME/.m2/repository/org/apache/hudi/hudi-metaserver-server-bundle/$VERSION/hudi-metaserver-server-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-utilities-slim-bundle_$SCALA_VERSION/$VERSION/hudi-utilities-slim-bundle_$SCALA_VERSION-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-spark3.5-bundle_$SCALA_VERSION/$VERSION/hudi-spark3.5-bundle_$SCALA_VERSION-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-cli-bundle_$SCALA_VERSION/$VERSION/hudi-cli-bundle_$SCALA_VERSION-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-flink1.20-bundle/$VERSION/hudi-flink1.20-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-kafka-connect-bundle/$VERSION/hudi-kafka-connect-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-presto-bundle/$VERSION/hudi-presto-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-trino-bundle/$VERSION/hudi-trino-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-hadoop-mr-bundle/$VERSION/hudi-hadoop-mr-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-hive-sync-bundle/$VERSION/hudi-hive-sync-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-gcp-bundle/$VERSION/hudi-gcp-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-aws-bundle/$VERSION/hudi-aws-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-datahub-sync-bundle/$VERSION/hudi-datahub-sync-bundle-$VERSION.jar"
+"$HOME/.m2/open-source-repository/org/apache/hudi/hudi-metaserver-server-bundle/$VERSION/hudi-metaserver-server-bundle-$VERSION.jar"
 )
 
 printf -v CLASSPATH ':%s' "${JARS[@]}"
