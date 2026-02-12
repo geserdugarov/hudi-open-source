@@ -119,6 +119,9 @@ mvn test -Punit-tests -pl hudi-spark-datasource/hudi-spark -DwildcardSuites=skip
 ### Metadata Table
 A hidden Hudi MoR table at `<table>/.hoodie/.metadata` storing file listings, bloom filters, column stats, record-level index, and functional indexes for query acceleration.
 
+## Reference baseline for implementation of DSv2 read
+Read docs/claude/iceberg/ICEBERG_SPARK_DSV2_READ_BLUEPRINT.md first and treat it as the reference baseline.
+
 ## Code Style
 
 Checkstyle is enforced (`style/checkstyle.xml`). Key rules:
