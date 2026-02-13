@@ -6,11 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Apache Hudi is an open data lakehouse platform built on a high-performance open table format. It supports ingestion, indexing, storage, serving, and transformation of data across cloud environments. The project is a multi-module Maven build (Java 11+, Scala 2.12/2.13) with engine integrations for Apache Spark, Apache Flink, Presto, and Trino.
 
+## JDK switch
+
+`sdk` is used to manage different JDKs.
+Use Java 11 here by default, and switch to it by `sdk use java 11.*`.
+Choose the latest minor version from installed once.
+
 ## Build Commands
+
+Check if session environment variable MAVEN_REPO_PATH was set.
+If now then always ask for local Maven repository path, and save it to MAVEN_REPO_PATH variable.
+Always add `-Dmaven.repo.local=${MAVEN_REPO_PATH}` to all Maven goal run.
+
+Java 11 is currently required by default to build the project.
+Support of Java 8 was dropped. 
+Always set `-Djava11 -Djava.version=11` if Java 11 is used.
+Always set `-Djava17 -Djava.version=17` if Java 17 is used.
+
+To prevent issues with SSL certificates always add 
+`-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true`
+to all Maven goal runs.
 
 ```bash
 # Full build (skip tests for speed)
-mvn clean package -DskipTests
+mvn clean package -DskipTests 
 
 # Build a specific module (with dependencies)
 mvn clean package -DskipTests -pl hudi-common -am
@@ -31,6 +50,8 @@ mvn clean package -DskipTests -Dintegration-tests
 ## Running Tests
 
 Tests are tagged and split across Maven profiles. Tests without a profile are skipped by default.
+
+Use rules for `-Dmaven.repo.local` and `-Djava* -Djava.version=*` from `## Build Commands` chapter.
 
 ```bash
 # Unit tests (excludes @Tag("functional") tests)
