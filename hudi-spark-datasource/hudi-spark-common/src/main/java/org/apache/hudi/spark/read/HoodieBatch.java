@@ -22,6 +22,7 @@ import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.util.SerializableConfiguration;
 
 import java.util.List;
 import java.util.Map;
@@ -37,15 +38,18 @@ public class HoodieBatch implements Batch {
   private final StructType tableSchema;
   private final StructType requiredSchema;
   private final Map<String, String> properties;
+  private final SerializableConfiguration serializableConf;
 
   public HoodieBatch(List<HoodieInputPartition> partitions,
                       StructType tableSchema,
                       StructType requiredSchema,
-                      Map<String, String> properties) {
+                      Map<String, String> properties,
+                      SerializableConfiguration serializableConf) {
     this.partitions = partitions;
     this.tableSchema = tableSchema;
     this.requiredSchema = requiredSchema;
     this.properties = properties;
+    this.serializableConf = serializableConf;
   }
 
   @Override
@@ -55,6 +59,7 @@ public class HoodieBatch implements Batch {
 
   @Override
   public PartitionReaderFactory createReaderFactory() {
-    return new HoodiePartitionReaderFactory(tableSchema, requiredSchema, properties);
+    return new HoodiePartitionReaderFactory(
+        tableSchema, requiredSchema, properties, serializableConf);
   }
 }

@@ -23,6 +23,7 @@ import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.util.SerializableConfiguration;
 
 import java.io.Serializable;
 import java.util.Map;
@@ -41,19 +42,23 @@ public class HoodiePartitionReaderFactory implements PartitionReaderFactory, Ser
   private final StructType tableSchema;
   private final StructType requiredSchema;
   private final Map<String, String> properties;
+  private final SerializableConfiguration serializableConf;
 
   public HoodiePartitionReaderFactory(StructType tableSchema,
                                        StructType requiredSchema,
-                                       Map<String, String> properties) {
+                                       Map<String, String> properties,
+                                       SerializableConfiguration serializableConf) {
     this.tableSchema = tableSchema;
     this.requiredSchema = requiredSchema;
     this.properties = properties;
+    this.serializableConf = serializableConf;
   }
 
   @Override
   public PartitionReader<InternalRow> createReader(InputPartition partition) {
     HoodieInputPartition hoodiePartition = (HoodieInputPartition) partition;
-    return new HoodiePartitionReader(hoodiePartition, tableSchema, requiredSchema, properties);
+    return new HoodiePartitionReader(
+        hoodiePartition, tableSchema, requiredSchema, properties, serializableConf);
   }
 
   @Override

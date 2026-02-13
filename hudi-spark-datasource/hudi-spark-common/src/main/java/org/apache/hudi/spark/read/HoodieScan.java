@@ -18,6 +18,7 @@
 
 package org.apache.hudi.spark.read;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.Scan;
@@ -25,7 +26,9 @@ import org.apache.spark.sql.connector.read.Statistics;
 import org.apache.spark.sql.connector.read.SupportsReportStatistics;
 import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.util.SerializableConfiguration;
 
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
@@ -35,9 +38,6 @@ import java.util.OptionalLong;
  * <p>Performs driver-side file planning in {@link #toBatch()} by using
  * {@code HoodieFileIndex} to resolve file slices, then packages them into
  * {@link HoodieInputPartition}s wrapped in a {@link HoodieBatch}.
- *
- * <p>Skeleton implementation — {@code toBatch()} is a stub that will be
- * wired to {@code HoodieFileIndex} in a follow-up change.
  */
 public class HoodieScan implements Scan, SupportsReportStatistics {
 
@@ -71,10 +71,13 @@ public class HoodieScan implements Scan, SupportsReportStatistics {
 
   @Override
   public Batch toBatch() {
-    // TODO: create HoodieFileIndex, call filterFileSlices(dataFilters, partitionFilters)
-    //       to get file slices, build HoodieTableMetaClient to get latestCommitTime,
-    //       then return new HoodieBatch(partitions, tableSchema, requiredSchema, options)
-    throw new UnsupportedOperationException("TODO: wire HoodieFileIndex in HoodieScan.toBatch()");
+    List<HoodieInputPartition> partitions =
+        HoodieScanHelper.planInputPartitions(spark, tablePath, tableSchema, options);
+
+    Configuration hadoopConf = spark.sessionState().newHadoopConf();
+    SerializableConfiguration serializableConf = new SerializableConfiguration(hadoopConf);
+
+    return new HoodieBatch(partitions, tableSchema, requiredSchema, options, serializableConf);
   }
 
   @Override
