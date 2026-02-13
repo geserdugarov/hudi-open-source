@@ -25,9 +25,9 @@ import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, HoodieCatalogTable}
 import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability, V1Table, V2TableWithV1Fallback}
-import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
+import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.hudi.ProvidesHoodieConfig
 import org.apache.spark.sql.sources.{Filter, InsertableRelation}
