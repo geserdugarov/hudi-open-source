@@ -72,4 +72,8 @@ public class HoodieInputPartition implements InputPartition, Serializable {
   public String getLatestCommitTime() {
     return latestCommitTime;
   }
+
+  public boolean hasLogFiles() {
+    return fileSlice.hasLogFiles();
+  }
 }

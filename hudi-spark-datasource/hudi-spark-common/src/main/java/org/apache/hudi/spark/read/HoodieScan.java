@@ -18,6 +18,10 @@
 
 package org.apache.hudi.spark.read;
 
+import org.apache.hudi.client.utils.SparkInternalSchemaConverter;
+import org.apache.hudi.common.util.Option;
+import org.apache.hudi.internal.schema.InternalSchema;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.connector.read.Batch;
@@ -38,6 +42,15 @@ import java.util.OptionalLong;
  * <p>Performs driver-side file planning in {@link #toBatch()} by using
  * {@code HoodieFileIndex} to resolve file slices, then packages them into
  * {@link HoodieInputPartition}s wrapped in a {@link HoodieBatch}.
+ *
+ * <p>Accepts classified partition and data filters from
+ * {@link HoodieScanBuilder} and passes them through to
+ * {@code HoodieFileIndex.filterFileSlices()} for partition pruning and
+ * data skipping.
+ *
+ * <p>File planning is lazy-initialized and cached so that both
+ * {@link #estimateStatistics()} and {@link #toBatch()} share the same
+ * computation without duplicating work.
  */
 public class HoodieScan implements Scan, SupportsReportStatistics {
 
@@ -45,17 +58,27 @@ public class HoodieScan implements Scan, SupportsReportStatistics {
   private final String tablePath;
   private final StructType tableSchema;
   private final StructType requiredSchema;
-  private final Filter[] pushedFilters;
+  private final Filter[] partitionFilters;
+  private final Filter[] dataFilters;
   private final Map<String, String> options;
+
+  /**
+   * Lazily computed and cached input partitions. Populated on first call to
+   * {@link #getOrPlanPartitions()} and reused by both {@link #toBatch()}
+   * and {@link #estimateStatistics()}.
+   */
+  private volatile List<HoodieInputPartition> cachedPartitions;
 
   public HoodieScan(SparkSession spark, String tablePath,
                      StructType tableSchema, StructType requiredSchema,
-                     Filter[] pushedFilters, Map<String, String> options) {
+                     Filter[] partitionFilters, Filter[] dataFilters,
+                     Map<String, String> options) {
     this.spark = spark;
     this.tablePath = tablePath;
     this.tableSchema = tableSchema;
     this.requiredSchema = requiredSchema;
-    this.pushedFilters = pushedFilters;
+    this.partitionFilters = partitionFilters;
+    this.dataFilters = dataFilters;
     this.options = options;
   }
 
@@ -71,21 +94,41 @@ public class HoodieScan implements Scan, SupportsReportStatistics {
 
   @Override
   public Batch toBatch() {
-    List<HoodieInputPartition> partitions =
-        HoodieScanHelper.planInputPartitions(spark, tablePath, tableSchema, options);
+    List<HoodieInputPartition> partitions = getOrPlanPartitions();
+
+    // Resolve InternalSchema for schema evolution support
+    Option<InternalSchema> internalSchemaOpt =
+        HoodieScanHelper.resolveInternalSchema(spark, tablePath, options);
 
     Configuration hadoopConf = spark.sessionState().newHadoopConf();
+    if (internalSchemaOpt.isPresent()) {
+      String validCommits = HoodieScanHelper.computeValidCommits(spark, tablePath);
+      hadoopConf.set(SparkInternalSchemaConverter.HOODIE_TABLE_PATH, tablePath);
+      hadoopConf.set(SparkInternalSchemaConverter.HOODIE_VALID_COMMITS_LIST, validCommits);
+    }
     SerializableConfiguration serializableConf = new SerializableConfiguration(hadoopConf);
 
-    return new HoodieBatch(partitions, tableSchema, requiredSchema, options, serializableConf);
+    boolean columnarReadSupported =
+        HoodieScanHelper.isColumnarReadSupported(spark.sessionState().conf(), requiredSchema);
+
+    return new HoodieBatch(
+        partitions, tableSchema, requiredSchema, options,
+        serializableConf, dataFilters, internalSchemaOpt,
+        columnarReadSupported);
   }
 
   @Override
   public Statistics estimateStatistics() {
+    List<HoodieInputPartition> partitions = getOrPlanPartitions();
+    long totalSize = 0;
+    for (HoodieInputPartition partition : partitions) {
+      totalSize += partition.getFileSlice().getTotalFileSize();
+    }
+    long sizeInBytes = totalSize;
     return new Statistics() {
       @Override
       public OptionalLong sizeInBytes() {
-        return OptionalLong.empty();
+        return OptionalLong.of(sizeInBytes);
       }
 
       @Override
@@ -93,5 +136,23 @@ public class HoodieScan implements Scan, SupportsReportStatistics {
         return OptionalLong.empty();
       }
     };
+  }
+
+  /**
+   * Lazily plans input partitions via {@link HoodieScanHelper} and caches
+   * the result for reuse across {@link #toBatch()} and
+   * {@link #estimateStatistics()}.
+   */
+  private List<HoodieInputPartition> getOrPlanPartitions() {
+    if (cachedPartitions == null) {
+      synchronized (this) {
+        if (cachedPartitions == null) {
+          cachedPartitions = HoodieScanHelper.planInputPartitions(
+              spark, tablePath, tableSchema, options,
+              partitionFilters, dataFilters);
+        }
+      }
+    }
+    return cachedPartitions;
   }
 }
