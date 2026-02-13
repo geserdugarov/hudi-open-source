@@ -22,6 +22,7 @@ import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.plans.logical.Statistics;
+import org.apache.spark.sql.execution.SparkPlan;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -87,6 +88,29 @@ public class TestHoodieDSv2Read {
   @AfterEach
   void tearDown() {
     spark.sql("DROP TABLE IF EXISTS " + tableName);
+  }
+
+  /**
+   * Checks whether any leaf (scan) node in the physical plan supports columnar
+   * reads. The top-level plan may not support columnar (e.g. SortExec from
+   * ORDER BY), but the underlying BatchScanExec should.
+   */
+  private static boolean scanSupportsColumnar(Dataset<Row> df) {
+    SparkPlan plan = df.queryExecution().sparkPlan();
+    return hasColumnarLeaf(plan);
+  }
+
+  private static boolean hasColumnarLeaf(SparkPlan plan) {
+    if (plan.children().isEmpty()) {
+      return plan.supportsColumnar();
+    }
+    scala.collection.Iterator<SparkPlan> iter = plan.children().iterator();
+    while (iter.hasNext()) {
+      if (hasColumnarLeaf(iter.next())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Test
@@ -459,8 +483,8 @@ public class TestHoodieDSv2Read {
     assertEquals(3, rows.get(2).getInt(0));
     assertEquals("a3", rows.get(2).getString(1));
 
-    // Verify the physical plan uses columnar (BatchScan with supportsColumnar)
-    assertTrue(result.queryExecution().executedPlan().supportsColumnar(),
+    // Verify the scan node in the physical plan supports columnar reads
+    assertTrue(scanSupportsColumnar(result),
         "COW table read should support columnar batches");
   }
 
@@ -538,7 +562,7 @@ public class TestHoodieDSv2Read {
     assertEquals(30.0, rows.get(2).getDouble(1));
 
     // Should still use columnar reads for COW
-    assertTrue(result.queryExecution().executedPlan().supportsColumnar(),
+    assertTrue(scanSupportsColumnar(result),
         "COW column pruning should still support columnar batches");
   }
 
