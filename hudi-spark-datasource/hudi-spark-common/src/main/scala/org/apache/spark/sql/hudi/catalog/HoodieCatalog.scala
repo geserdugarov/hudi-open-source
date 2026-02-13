@@ -138,6 +138,8 @@ class HoodieCatalog extends DelegatingCatalogExtension
           tableIdentifier = Some(ident.toString))
 
         val schemaEvolutionEnabled = ProvidesHoodieConfig.isSchemaEvolutionEnabled(spark)
+        val dsv2ReadEnabled = spark.conf.getOption("hoodie.datasource.read.use.dsv2")
+          .exists(_.toBoolean)
 
         // NOTE: PLEASE READ CAREFULLY
         //
@@ -146,7 +148,7 @@ class HoodieCatalog extends DelegatingCatalogExtension
         // where V2 API have to be used. Currently only such use-case is using of Schema Evolution feature
         //
         // Check out HUDI-4178 for more details
-        if (schemaEvolutionEnabled) {
+        if (schemaEvolutionEnabled || dsv2ReadEnabled) {
           v2Table
         } else {
           v2Table.v1TableWrapper

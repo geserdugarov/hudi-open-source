@@ -19,13 +19,15 @@ package org.apache.spark.sql.hudi.catalog
 
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
+import org.apache.hudi.spark.read.HoodieScanBuilder
 
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, HoodieCatalogTable}
-import org.apache.spark.sql.connector.catalog.{SupportsWrite, Table, TableCapability, V1Table, V2TableWithV1Fallback}
+import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability, V1Table, V2TableWithV1Fallback}
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
+import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.hudi.ProvidesHoodieConfig
 import org.apache.spark.sql.sources.{Filter, InsertableRelation}
@@ -41,7 +43,7 @@ case class HoodieInternalV2Table(spark: SparkSession,
                                  catalogTable: Option[CatalogTable] = None,
                                  tableIdentifier: Option[String] = None,
                                  options: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty())
-  extends Table with SupportsWrite with V2TableWithV1Fallback {
+  extends Table with SupportsRead with SupportsWrite with V2TableWithV1Fallback {
 
   lazy val hoodieCatalogTable: HoodieCatalogTable = if (catalogTable.isDefined) {
     HoodieCatalogTable(spark, catalogTable.get)
@@ -69,6 +71,14 @@ case class HoodieInternalV2Table(spark: SparkSession,
 
   override def properties(): util.Map[String, String] = {
     hoodieCatalogTable.catalogProperties.asJava
+  }
+
+  override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
+    val merged = new java.util.HashMap[String, String]()
+    hoodieCatalogTable.catalogProperties.foreach { case (k, v) => merged.put(k, v) }
+    options.asCaseSensitiveMap().forEach((k, v) => merged.put(k, v))
+    new HoodieScanBuilder(spark, path, schema(),
+      java.util.Collections.unmodifiableMap(merged))
   }
 
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
