@@ -77,8 +77,9 @@ case class HoodieInternalV2Table(spark: SparkSession,
     val merged = new java.util.HashMap[String, String]()
     hoodieCatalogTable.catalogProperties.foreach { case (k, v) => merged.put(k, v) }
     options.asCaseSensitiveMap().forEach((k, v) => merged.put(k, v))
+    val partitionColumns = hoodieCatalogTable.partitionFields.toArray
     new HoodieScanBuilder(spark, path, schema(),
-      java.util.Collections.unmodifiableMap(merged))
+      java.util.Collections.unmodifiableMap(merged), partitionColumns)
   }
 
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {

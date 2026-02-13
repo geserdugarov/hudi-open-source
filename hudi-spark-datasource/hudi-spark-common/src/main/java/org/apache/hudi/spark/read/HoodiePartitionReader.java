@@ -30,6 +30,7 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.read.HoodieFileGroupReader;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.internal.schema.InternalSchema;
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 
 import org.apache.hadoop.conf.Configuration;
@@ -45,8 +46,7 @@ import org.apache.spark.util.SerializableConfiguration;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.Collections;
-import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
 
 import scala.Tuple2;
@@ -63,6 +63,8 @@ public class HoodiePartitionReader implements PartitionReader<InternalRow> {
   private final StructType requiredSchema;
   private final Map<String, String> properties;
   private final SerializableConfiguration serializableConf;
+  private final Filter[] dataFilters;
+  private final Option<InternalSchema> internalSchemaOpt;
 
   private boolean initialized;
   private ClosableIterator<InternalRow> iterator;
@@ -73,12 +75,16 @@ public class HoodiePartitionReader implements PartitionReader<InternalRow> {
                                 StructType tableSchema,
                                 StructType requiredSchema,
                                 Map<String, String> properties,
-                                SerializableConfiguration serializableConf) {
+                                SerializableConfiguration serializableConf,
+                                Filter[] dataFilters,
+                                Option<InternalSchema> internalSchemaOpt) {
     this.partition = partition;
     this.tableSchema = tableSchema;
     this.requiredSchema = requiredSchema;
     this.properties = properties;
     this.serializableConf = serializableConf;
+    this.dataFilters = dataFilters;
+    this.internalSchemaOpt = internalSchemaOpt;
   }
 
   @Override
@@ -131,10 +137,11 @@ public class HoodiePartitionReader implements PartitionReader<InternalRow> {
     SparkColumnarFileReader baseFileReader =
         sparkAdapter.createParquetFileReader(false, sqlConf, readerOptions, hadoopConf);
 
-    // Build reader context with empty filters (filter pushdown comes in PR 2)
-    List<Filter> emptyFilters = Collections.emptyList();
+    // Convert data filters to Scala Seq for the reader context.
+    // Both the 'filters' and 'requiredFilters' params receive the same
+    // data filters so Parquet predicate pushdown is effective at file level.
     scala.collection.Seq<Filter> scalaFilters =
-        JavaConverters.asScalaBufferConverter(emptyFilters).asScala().toSeq();
+        JavaConverters.asScalaBufferConverter(Arrays.asList(dataFilters)).asScala().toSeq();
     SparkFileFormatInternalRowReaderContext readerContext =
         new SparkFileFormatInternalRowReaderContext(
             baseFileReader, scalaFilters, scalaFilters, storageConf, metaClient.getTableConfig());
@@ -166,7 +173,7 @@ public class HoodiePartitionReader implements PartitionReader<InternalRow> {
         .withFileSlice(partition.getFileSlice())
         .withDataSchema(dataSchema)
         .withRequestedSchema(requestedSchema)
-        .withInternalSchema(Option.empty())
+        .withInternalSchema(internalSchemaOpt)
         .withProps(props)
         .withShouldUseRecordPosition(shouldUseRecordPosition)
         .build();

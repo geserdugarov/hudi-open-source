@@ -18,9 +18,13 @@
 
 package org.apache.hudi.spark.read;
 
+import org.apache.hudi.common.util.Option;
+import org.apache.hudi.internal.schema.InternalSchema;
+
 import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
+import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.util.SerializableConfiguration;
 
@@ -39,17 +43,26 @@ public class HoodieBatch implements Batch {
   private final StructType requiredSchema;
   private final Map<String, String> properties;
   private final SerializableConfiguration serializableConf;
+  private final Filter[] dataFilters;
+  private final Option<InternalSchema> internalSchemaOpt;
+  private final boolean columnarReadSupported;
 
   public HoodieBatch(List<HoodieInputPartition> partitions,
                       StructType tableSchema,
                       StructType requiredSchema,
                       Map<String, String> properties,
-                      SerializableConfiguration serializableConf) {
+                      SerializableConfiguration serializableConf,
+                      Filter[] dataFilters,
+                      Option<InternalSchema> internalSchemaOpt,
+                      boolean columnarReadSupported) {
     this.partitions = partitions;
     this.tableSchema = tableSchema;
     this.requiredSchema = requiredSchema;
     this.properties = properties;
     this.serializableConf = serializableConf;
+    this.dataFilters = dataFilters;
+    this.internalSchemaOpt = internalSchemaOpt;
+    this.columnarReadSupported = columnarReadSupported;
   }
 
   @Override
@@ -60,6 +73,7 @@ public class HoodieBatch implements Batch {
   @Override
   public PartitionReaderFactory createReaderFactory() {
     return new HoodiePartitionReaderFactory(
-        tableSchema, requiredSchema, properties, serializableConf);
+        tableSchema, requiredSchema, properties, serializableConf,
+        dataFilters, internalSchemaOpt, columnarReadSupported);
   }
 }
