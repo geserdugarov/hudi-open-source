@@ -358,15 +358,10 @@ Each phase includes targeted tests in `TestHoodieDSv2Read.java`:
 
 ### Benchmark Suite
 
-A consistent benchmark must be run before and after each phase to detect regressions:
-
-1. **Scan throughput**: Full table scan (SELECT *) on COW and MOR tables with 10M+ rows
-2. **Filter selectivity**: Point lookup, range scan, partition pruning on partitioned table
-3. **Join performance**: Broadcast join (small table) and sort-merge join (large table) to
-   validate CBO statistics impact
-4. **Schema evolution overhead**: Read with evolved schema vs. stable schema
-
-Results should be compared against the V1 baseline on the same dataset and hardware.
+A consistent benchmark must be run before and after each phase to detect regressions.
+The detailed benchmark design — including the 8-case matrix (4 query patterns × 2 table types),
+data setup, schema, running instructions, and success criteria — is described in
+[benchmark-design.md](benchmark-design.md).
 
 ### Regression Protection
 
