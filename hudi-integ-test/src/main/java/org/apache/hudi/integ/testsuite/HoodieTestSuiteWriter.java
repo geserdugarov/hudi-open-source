@@ -18,7 +18,6 @@
 
 package org.apache.hudi.integ.testsuite;
 
-import org.apache.hudi.client.HoodieReadClient;
 import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
@@ -68,7 +67,7 @@ public abstract class HoodieTestSuiteWriter implements Serializable {
   protected SparkRDDWriteClient writeClient;
   protected HoodieTestSuiteJob.HoodieTestSuiteConfig cfg;
   protected Option<Checkpoint> lastCheckpoint;
-  protected HoodieReadClient hoodieReadClient;
+  protected SparkRDDReadClient readClient;
   protected Properties props;
   protected String schema;
   protected transient Configuration configuration;
@@ -82,7 +81,7 @@ public abstract class HoodieTestSuiteWriter implements Serializable {
     // {@link HoodieDeltaStreamer#commit(HoodieWriteClient, JavaRDD, Option)} is invoked.
     HoodieSparkEngineContext context = new HoodieSparkEngineContext(jsc);
     this.deltaStreamerWrapper = new HoodieDeltaStreamerWrapper(cfg, jsc);
-    this.hoodieReadClient = new HoodieReadClient(context, cfg.targetBasePath);
+    this.readClient = new SparkRDDReadClient(context, cfg.targetBasePath);
     this.writeConfig = getHoodieClientConfig(cfg, props, schema);
     this.writeClient = new SparkRDDWriteClient(context, writeConfig);
     this.cfg = cfg;

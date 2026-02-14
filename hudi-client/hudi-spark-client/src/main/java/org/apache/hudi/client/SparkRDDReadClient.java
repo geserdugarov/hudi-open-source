@@ -92,7 +92,7 @@ public class SparkRDDReadClient<T> implements Serializable {
   }
 
   /**
-   * Initializes the {@link HoodieReadClient} with engine context, base path, SQL context and index type.
+   * Initializes the {@link SparkRDDReadClient} with engine context, base path, SQL context and index type.
    *
    * @param context    Hudi Spark engine context
    * @param basePath   Base path of the table

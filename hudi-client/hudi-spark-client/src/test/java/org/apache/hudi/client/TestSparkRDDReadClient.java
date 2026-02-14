@@ -46,10 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Test-cases for covering HoodieReadClient APIs
+ * Test-cases for covering SparkRDDReadClient APIs
  */
 @SuppressWarnings("unchecked")
-public class TestHoodieReadClient extends HoodieClientTestBase {
+public class TestSparkRDDReadClient extends HoodieClientTestBase {
 
   private static final int PARALLELISM = 2;
 
