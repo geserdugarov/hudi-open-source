@@ -17,7 +17,14 @@
 
 package org.apache.hudi
 
+import org.apache.hudi.exception.HoodieException
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
+import org.apache.spark.sql.connector.expressions.Transform
+import org.apache.spark.sql.hudi.catalog.HoodieInternalV2Table
 import org.apache.spark.sql.sources.DataSourceRegister
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 /**
  * NOTE: PLEASE READ CAREFULLY
@@ -25,11 +32,10 @@ import org.apache.spark.sql.sources.DataSourceRegister
  *       there are no regressions in performance
  *       Please check out HUDI-4178 for more details
  */
-class BaseDefaultSource extends DefaultSource with DataSourceRegister /* with TableProvider */ {
+class BaseDefaultSource extends DefaultSource with DataSourceRegister with TableProvider {
 
   override def shortName(): String = "hudi"
 
-  /*
   def inferSchema: StructType = new StructType()
 
   override def inferSchema(options: CaseInsensitiveStringMap): StructType = inferSchema
@@ -43,5 +49,5 @@ class BaseDefaultSource extends DefaultSource with DataSourceRegister /* with Ta
 
     HoodieInternalV2Table(SparkSession.active, path)
   }
-  */
+
 }
