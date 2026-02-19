@@ -13,7 +13,10 @@ metastore_db/
  
 *.class
 .java-version
- 
+
+# Private settings
+.env
+
 # Package Files #
 *.jar
 # But not these files...
@@ -94,6 +97,5 @@ hudi-spark-datasource/hudi-spark/src/test/resources/upgrade-downgrade-fixtures/s
 #######################################
 # AI Tools
 #######################################
-CLAUDE.md
 .claude
 .codex
