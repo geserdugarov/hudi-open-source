@@ -21,7 +21,7 @@ This module contains the Spark integration for Hudi, providing a DataSource API 
 
 ## Overview
 
-The `hudi-spark-datasource` aggregates multiple sub-modules that together provide comprehensive Spark support for Hudi. 
+The `hudi-spark-datasource` aggregates multiple sub-modules that together provide comprehensive Spark support for Hudi.
 The modules are organized in a layered architecture to maximize code reuse across different Spark versions while maintaining version-specific optimizations.
 
 ## Module Descriptions
@@ -36,6 +36,24 @@ The modules are organized in a layered architecture to maximize code reuse acros
 | `hudi-spark3.5.x` | Spark 3.5.x-specific adapter implementation (default). |
 | `hudi-spark4.0.x` | Spark 4.0.x-specific adapter implementation. |
 | `hudi-spark` | Main Spark datasource module containing Spark Session extensions, stored procedures, SQL parser, and logical plans. |
+
+## Module Dependency Diagram
+
+```
+hudi-spark-common  (shared across Spark 3.x and 4.x)
+    |
+    +-- hudi-spark3-common  (shared across Spark 3.x)
+    |       |
+    |       +-- hudi-spark3.3.x
+    |       +-- hudi-spark3.4.x
+    |       +-- hudi-spark3.5.x  (default)
+    |
+    +-- hudi-spark4-common  (shared across Spark 4.x)
+            |
+            +-- hudi-spark4.0.x
+
+hudi-spark  (main datasource, depends on version-specific module via Maven profile)
+```
 
 ## Spark Version Support
 
@@ -56,3 +74,20 @@ The modules are organized in a layered architecture to maximize code reuse acros
 - **Index Support**: Bloom filters, column statistics, record-level index, and partition stats
 - **Streaming Support**: Structured Streaming source for continuous data ingestion
 - **CDC Support**: Change Data Capture for tracking row-level changes
+
+## Build
+
+```bash
+# Default build (Spark 3.5, Scala 2.12)
+mvn clean package -DskipTests -Dspark3.5
+
+# Spark 3.3 or 3.4
+mvn clean package -DskipTests -Dspark3.3
+mvn clean package -DskipTests -Dspark3.4
+
+# Spark 3.5 with Scala 2.13
+mvn clean package -DskipTests -Dspark3.5 -Dscala-2.13
+
+# Spark 4.0 (requires Java 17)
+mvn clean package -DskipTests -Dspark4.0 -Djava17 -Djava.version=17
+```
