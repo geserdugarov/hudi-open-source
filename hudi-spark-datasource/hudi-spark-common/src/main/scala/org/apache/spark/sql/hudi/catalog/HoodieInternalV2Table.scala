@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.hudi.catalog
 
+import org.apache.hudi.{HoodieSchemaConversionUtils, HoodieSparkSqlWriter}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 
@@ -87,7 +88,7 @@ case class HoodieInternalV2Table(spark: SparkSession,
 
 }
 
-private class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
+private[hudi] class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
                                    hoodieCatalogTable: HoodieCatalogTable,
                                    spark: SparkSession)
   extends SupportsTruncate with SupportsOverwrite with ProvidesHoodieConfig {
@@ -115,11 +116,34 @@ private class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
             SaveMode.Append
           }
 
-          data.write.format("org.apache.hudi")
-            .mode(mode)
-            .options(buildHoodieConfig(hoodieCatalogTable) ++
-              buildHoodieInsertConfig(hoodieCatalogTable, spark, overwritePartition, overwriteTable, Map.empty, Map.empty))
-            .save()
+          val config = buildHoodieConfig(hoodieCatalogTable) ++
+            buildHoodieInsertConfig(hoodieCatalogTable, spark,
+              overwritePartition, overwriteTable, Map.empty, Map.empty)
+
+          // The V2-to-V1 fallback may receive a DataFrame with generic column names
+          // (e.g., col1, col2 from VALUES clause) and uncast types (e.g., DECIMAL literals
+          // for DOUBLE columns). Rename and cast columns to match the table's user schema.
+          val userSchema = hoodieCatalogTable.tableSchemaWithoutMetaFields
+          val alignedData = if (data.columns.length == userSchema.length) {
+            val columns = data.schema.fields.zip(userSchema.fields).map {
+              case (srcField, tgtField) =>
+                data.col(srcField.name).cast(tgtField.dataType).as(tgtField.name)
+            }
+            data.select(columns: _*)
+          } else {
+            data
+          }
+
+          // Pass the catalog schema so the V1 writer can properly reconcile the
+          // incoming schema with the full table schema (including meta-fields).
+          val (structName, namespace) =
+            HoodieSchemaConversionUtils.getRecordNameAndNamespace(hoodieCatalogTable.tableName)
+          val catalogSchema = HoodieSchemaConversionUtils
+            .convertStructTypeToHoodieSchema(hoodieCatalogTable.tableSchema, structName, namespace)
+
+          HoodieSparkSqlWriter.write(spark.sqlContext, mode, config, alignedData,
+            schemaFromCatalog = Option(catalogSchema))
+          HoodieSparkSqlWriter.cleanup()
         }
       }
     }
