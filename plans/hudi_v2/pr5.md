@@ -1,6 +1,6 @@
 # PR 5: Incremental & CDC Queries
 
-**Status: IN PROGRESS**
+**Status: DONE**
 
 **Goal:** Support incremental queries (`hoodie.datasource.query.type=incremental`) and CDC queries
 through the DSv2 path, achieving feature parity with DSv1 for all three query types:

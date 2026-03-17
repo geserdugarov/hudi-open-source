@@ -281,7 +281,7 @@ Not originally planned, but added alongside PR1:
 
 ## PR 5: Incremental and CDC Queries
 
-**Status: NOT STARTED**
+**Status: DONE**
 
 **Goal:** Support incremental queries (`hoodie.datasource.query.type=incremental`) and CDC queries through the DSv2 path.
 
@@ -334,7 +334,7 @@ Not originally planned, but added alongside PR1:
 
 **Branch:** `dsv2-read-06-advanced-pushdowns`
 
-**Depends on:** PR 5 (NOT STARTED)
+**Depends on:** PR 5 (DONE)
 
 ### Modified Files
 
@@ -380,7 +380,7 @@ PR 4: MoR Snapshot Read                  ✅ DONE
       (base + log file merging)
   │
   v
-PR 5: Incremental & CDC Queries          ⬜ NOT STARTED
+PR 5: Incremental & CDC Queries          ✅ DONE
       (query type routing + incremental/CDC readers)
   │
   v
