@@ -195,7 +195,7 @@ Not originally planned, but added alongside PR1:
 
 ## PR 3: CoW Snapshot Read — Filter Pushdown
 
-**Status: NOT STARTED**
+**Status: DONE**
 
 **Goal:** Partition pruning and data filters are correctly pushed down through `HoodieScanBuilder` and applied via `HoodieFileIndex` data skipping.
 
@@ -226,11 +226,11 @@ Not originally planned, but added alongside PR1:
 
 ### Verification Checklist
 
-- [ ] Partition pruning reduces the number of files scanned.
-- [ ] Data skipping via column stats works when metadata table is enabled.
-- [ ] Residual filters are correctly returned to Spark.
-- [ ] `EXPLAIN` shows pushed filters.
-- [ ] SQL `SELECT ... WHERE` with config `true` applies partition pruning correctly.
+- [x] Partition pruning reduces the number of files scanned.
+- [x] Data skipping via column stats works when metadata table is enabled.
+- [x] Residual filters are correctly returned to Spark.
+- [x] `EXPLAIN` shows pushed filters.
+- [x] SQL `SELECT ... WHERE` with config `true` applies partition pruning correctly.
 
 ---
 
@@ -242,7 +242,7 @@ Not originally planned, but added alongside PR1:
 
 **Branch:** `dsv2-read-04-mor-snapshot-read`
 
-**Depends on:** PR 3 (NOT STARTED)
+**Depends on:** PR 3 (DONE)
 
 ### Modified Files
 
@@ -372,7 +372,7 @@ PR 2: CoW Snapshot Read                  ✅ DONE
       (HoodieFileIndex wiring + base file reading)
   │
   v
-PR 3: Filter Pushdown                    ⬜ NOT STARTED
+PR 3: Filter Pushdown                    ✅ DONE
       (partition pruning + data skipping)
   │
   v
