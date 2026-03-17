@@ -1,5 +1,7 @@
 # PR1: DSv2/DSv1 Coexistence Proof-of-Concept
 
+**Status: DONE** (implemented on branch `hudi-worktree-v2`)
+
 ## Context
 
 Apache Hudi currently uses only the Spark DataSource V1 (DSv1) read path. RFC-98 plans to add DSv2 read support for advanced pushdown optimizations. This PR is the first step: proving DSv2 and DSv1 can coexist without interfering. The DSv2 read stub returns correct schema but empty results. Writes always fall back to DSv1.

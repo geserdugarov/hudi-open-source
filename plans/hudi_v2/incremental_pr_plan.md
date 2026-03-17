@@ -7,6 +7,8 @@ Each PR is self-contained, reviewable, and produces a working state.
 
 ## PR 1: Proof-of-Concept — DSv2 / DSv1 Coexistence (DataFrame API + SQL)
 
+**Status: DONE** (implemented on branch `hudi-worktree-v2`)
+
 **Goal:** Prove that DSv2 and DSv1 can coexist without interfering with each other across **both** activation paths: DataFrame API (`format("hudi_v2")`) and SQL queries (`hoodie.datasource.read.use.v2`). The DSv2 read path returns correct schema and empty results (stub). Writes fall back to the existing DSv1 pipeline in both modes.
 
 **Branch:** `dsv2-read-01-coexistence-poc`
@@ -115,26 +117,35 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 
 ### Verification Checklist
 
-- [ ] `spark.read.format("hudi").load(path)` works unchanged.
-- [ ] `spark.read.format("hudi_v2").load(path)` resolves without errors, returns empty DataFrame with correct schema.
-- [ ] `df.write.format("hudi_v2").mode("append").save(path)` falls back to DSv1 write pipeline.
-- [ ] `SELECT * FROM table` with config `false` uses DSv1, returns real data (no regression).
-- [ ] `SELECT * FROM table` with config `true` uses DSv2 stub, returns empty result with correct schema.
-- [ ] `INSERT INTO table` works with config `true` (V1 write fallback).
-- [ ] DDL operations unaffected with config `true`.
-- [ ] Schema evolution path unaffected.
-- [ ] `EXPLAIN` shows `BatchScanExec` for DSv2 path, `FileSourceScanExec` for DSv1 path.
-- [ ] Existing unit and functional tests pass with no changes.
+- [x] `spark.read.format("hudi").load(path)` works unchanged. (`testBaselineDSv1WriteAndRead`)
+- [x] `spark.read.format("hudi_v2").load(path)` resolves without errors, returns empty DataFrame with correct schema. (`testDSv1WriteAndDSv2Read`, `testDSv2ReadSchemaAndPlan`)
+- [x] `df.write.format("hudi_v2").mode("append").save(path)` falls back to DSv1 write pipeline. (`testDSv2WriteViaDataFrameAPI`)
+- [x] `SELECT * FROM table` with config `false` uses DSv1, returns real data (no regression). (`testSqlConfigFalseUsesDSv1`)
+- [x] `SELECT * FROM table` with config `true` uses DSv2 stub, returns empty result with correct schema. (`testSqlConfigTrueUsesDSv2Stub`)
+- [x] `INSERT INTO table` works with config `true` (V1 write fallback). (`testSqlInsertWithV2ReadEnabled`)
+- [x] DDL operations unaffected with config `true`. (`testDdlOperationsWithV2ReadEnabled`)
+- [x] Schema evolution path unaffected. (`testSchemaEvolutionPathUnaffectedByV2Config`)
+- [x] `EXPLAIN` shows `BatchScanExec` for DSv2 path, `FileSourceScanExec` for DSv1 path. (`testExplainShowsDSv2`)
+- [x] Existing unit and functional tests pass with no changes.
+
+### Bonus: Benchmark Infrastructure
+
+Not originally planned, but added alongside PR1:
+- `benchmarks/README.md` — benchmark documentation for COW/MOR, DSv1/DSv2 comparison
+- `benchmarks/hudi_benchmark.scala` — comprehensive Spark shell benchmark script (DSv2 disabled by default since reads are still stubs)
+- `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/execution/benchmark/CowTableReadBenchmark.scala` — COW vectorized reader micro-benchmark
 
 ---
 
 ## PR 2: CoW Snapshot Read — File Listing and Base File Reading
 
+**Status: NOT STARTED**
+
 **Goal:** `format("hudi_v2")` and `SELECT` with config `true` read actual data from CoW snapshot tables by wiring `HoodieBatchScan.planInputPartitions()` to `HoodieFileIndex` and implementing base file reading in `HoodiePartitionReader`.
 
 **Branch:** `dsv2-read-02-cow-snapshot-read`
 
-**Depends on:** PR 1
+**Depends on:** PR 1 (DONE)
 
 ### Modified Files
 
@@ -184,11 +195,13 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 
 ## PR 3: CoW Snapshot Read — Filter Pushdown
 
+**Status: NOT STARTED**
+
 **Goal:** Partition pruning and data filters are correctly pushed down through `HoodieScanBuilder` and applied via `HoodieFileIndex` data skipping.
 
 **Branch:** `dsv2-read-03-cow-filter-pushdown`
 
-**Depends on:** PR 2
+**Depends on:** PR 2 (NOT STARTED)
 
 ### Modified Files
 
@@ -223,11 +236,13 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 
 ## PR 4: MoR Snapshot Read — Base + Log File Merging
 
+**Status: NOT STARTED**
+
 **Goal:** `format("hudi_v2")` and SQL with config `true` read MoR tables by merging base files with log files.
 
 **Branch:** `dsv2-read-04-mor-snapshot-read`
 
-**Depends on:** PR 3
+**Depends on:** PR 3 (NOT STARTED)
 
 ### Modified Files
 
@@ -266,11 +281,13 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 
 ## PR 5: Incremental and CDC Queries
 
+**Status: NOT STARTED**
+
 **Goal:** Support incremental queries (`hoodie.datasource.query.type=incremental`) and CDC queries through the DSv2 path.
 
 **Branch:** `dsv2-read-05-incremental-cdc`
 
-**Depends on:** PR 4
+**Depends on:** PR 4 (NOT STARTED)
 
 ### Modified Files
 
@@ -311,11 +328,13 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 
 ## PR 6: Advanced Pushdowns — Aggregates, Limit, TopN
 
+**Status: NOT STARTED**
+
 **Goal:** Leverage DSv2 pushdown interfaces for performance optimizations not possible with DSv1.
 
 **Branch:** `dsv2-read-06-advanced-pushdowns`
 
-**Depends on:** PR 5
+**Depends on:** PR 5 (NOT STARTED)
 
 ### Modified Files
 
@@ -345,27 +364,27 @@ In `hudi-spark-datasource/hudi-spark/src/test/scala/org/apache/spark/sql/hudi/v2
 ## Summary — PR Dependency Graph
 
 ```
-PR 1: Coexistence POC
+PR 1: Coexistence POC                    ✅ DONE
       (DSv2 stub + DSv1 write fallback + catalog config + HoodieCatalog.loadTable)
   │
   v
-PR 2: CoW Snapshot Read
+PR 2: CoW Snapshot Read                  ⬜ NOT STARTED
       (HoodieFileIndex wiring + base file reading)
   │
   v
-PR 3: Filter Pushdown
+PR 3: Filter Pushdown                    ⬜ NOT STARTED
       (partition pruning + data skipping)
   │
   v
-PR 4: MoR Snapshot Read
+PR 4: MoR Snapshot Read                  ⬜ NOT STARTED
       (base + log file merging)
   │
   v
-PR 5: Incremental & CDC Queries
+PR 5: Incremental & CDC Queries          ⬜ NOT STARTED
       (query type routing + incremental/CDC readers)
   │
   v
-PR 6: Advanced Pushdowns
+PR 6: Advanced Pushdowns                 ⬜ NOT STARTED
       (aggregates, limit, TopN)
 ```
 
