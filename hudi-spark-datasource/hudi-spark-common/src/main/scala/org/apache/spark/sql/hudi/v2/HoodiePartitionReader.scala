@@ -18,6 +18,7 @@
 package org.apache.spark.sql.hudi.v2
 
 import org.apache.hudi.SparkAdapterSupport
+import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.util.{Option => HOption}
 import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
@@ -34,13 +35,15 @@ import java.io.Closeable
 
 /**
  * Partition reader that reads rows from a single CoW base file using [[SparkColumnarFileReader]].
+ * Supports optional commit time filtering for incremental queries.
  */
 class HoodiePartitionReader(partition: HoodieInputPartition,
                             broadcastReader: Broadcast[SparkColumnarFileReader],
                             broadcastConf: Broadcast[SerializableConfiguration],
                             readSchema: StructType,
                             requiredDataSchema: StructType,
-                            requiredPartitionSchema: StructType)
+                            requiredPartitionSchema: StructType,
+                            includedCommitTimes: Option[Set[String]] = None)
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val iter: Iterator[InternalRow] = createIterator()
@@ -67,20 +70,57 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
   private def createIterator(): Iterator[InternalRow] = {
     val partValues = InternalRow.fromSeq(partition.partitionValues.toSeq)
 
+    // For incremental queries, we need _hoodie_commit_time in the read schema
+    // even if the user didn't request it, so we can filter by commit time.
+    val (effectiveDataSchema, needsCommitTimeProjection) = includedCommitTimes match {
+      case Some(_) =>
+        val commitTimeField = HoodieRecord.COMMIT_TIME_METADATA_FIELD
+        if (requiredDataSchema.fieldNames.contains(commitTimeField)) {
+          (requiredDataSchema, false)
+        } else {
+          // Add commit time field from the base file schema
+          val commitTimeStructField = org.apache.spark.sql.types.StructField(
+            commitTimeField, org.apache.spark.sql.types.StringType)
+          (StructType(commitTimeStructField +: requiredDataSchema.fields), true)
+        }
+      case None => (requiredDataSchema, false)
+    }
+
     val pFile = sparkAdapter.getSparkPartitionedFileUtils
       .createPartitionedFile(partValues, new StoragePath(partition.baseFilePath), 0L, partition.baseFileLength)
 
     val storageConf = new HadoopStorageConfiguration(broadcastConf.value.value)
     val rawIter = broadcastReader.value.read(
-      pFile, requiredDataSchema, requiredPartitionSchema,
+      pFile, effectiveDataSchema, requiredPartitionSchema,
       HOption.empty(), Seq.empty, storageConf)
 
-    val readerOutputSchema = StructType(requiredDataSchema.fields ++ requiredPartitionSchema.fields)
-    if (readerOutputSchema != readSchema) {
-      val projection = HoodieCatalystExpressionUtils.generateUnsafeProjection(readerOutputSchema, readSchema)
-      rawIter.map(row => projection(row))
-    } else {
-      rawIter
+    // Apply commit time filtering for incremental queries
+    val filteredIter = includedCommitTimes match {
+      case Some(commitTimes) =>
+        val commitTimeIdx = effectiveDataSchema.fieldIndex(HoodieRecord.COMMIT_TIME_METADATA_FIELD)
+        rawIter.filter { row =>
+          val commitTime = row.getUTF8String(commitTimeIdx)
+          commitTime != null && commitTimes.contains(commitTime.toString)
+        }
+      case None => rawIter
     }
+
+    // If we added commit time field just for filtering, project it out
+    val projectedIter = if (needsCommitTimeProjection) {
+      val readerOutputSchema = StructType(effectiveDataSchema.fields ++ requiredPartitionSchema.fields)
+      val targetSchema = StructType(requiredDataSchema.fields ++ requiredPartitionSchema.fields)
+      val projection = HoodieCatalystExpressionUtils.generateUnsafeProjection(readerOutputSchema, targetSchema)
+      filteredIter.map(row => projection(row))
+    } else {
+      val readerOutputSchema = StructType(effectiveDataSchema.fields ++ requiredPartitionSchema.fields)
+      if (readerOutputSchema != readSchema) {
+        val projection = HoodieCatalystExpressionUtils.generateUnsafeProjection(readerOutputSchema, readSchema)
+        filteredIter.map(row => projection(row))
+      } else {
+        filteredIter
+      }
+    }
+
+    projectedIter
   }
 }

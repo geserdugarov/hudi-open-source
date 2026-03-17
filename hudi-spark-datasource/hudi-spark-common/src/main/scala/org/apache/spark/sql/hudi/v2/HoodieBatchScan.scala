@@ -55,7 +55,8 @@ class HoodieBatchScan(readSchema: StructType,
                       requiredDataSchema: StructType,
                       requiredPartitionSchema: StructType,
                       pushedFilters: Array[Filter] = Array.empty,
-                      morContext: Option[MorContext] = None) extends Scan with Batch {
+                      morContext: Option[MorContext] = None,
+                      includedCommitTimes: Option[Set[String]] = None) extends Scan with Batch {
 
   override def readSchema(): StructType = readSchema
 
@@ -79,6 +80,7 @@ class HoodieBatchScan(readSchema: StructType,
       readSchema,
       requiredDataSchema,
       requiredPartitionSchema,
-      morContext)
+      morContext,
+      includedCommitTimes)
   }
 }
