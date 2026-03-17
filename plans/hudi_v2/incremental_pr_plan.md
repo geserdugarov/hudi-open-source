@@ -139,7 +139,7 @@ Not originally planned, but added alongside PR1:
 
 ## PR 2: CoW Snapshot Read — File Listing and Base File Reading
 
-**Status: NOT STARTED**
+**Status: DONE**
 
 **Goal:** `format("hudi_v2")` and `SELECT` with config `true` read actual data from CoW snapshot tables by wiring `HoodieBatchScan.planInputPartitions()` to `HoodieFileIndex` and implementing base file reading in `HoodiePartitionReader`.
 
@@ -185,11 +185,11 @@ Not originally planned, but added alongside PR1:
 
 ### Verification Checklist
 
-- [ ] CoW table reads via `format("hudi_v2")` return correct data matching `format("hudi")`.
-- [ ] CoW table reads via SQL `SELECT` with config `true` return correct data matching config `false`.
-- [ ] Partitioned CoW tables return correct data with partition values.
-- [ ] Column pruning works (only requested columns are read).
-- [ ] Multiple commits: only latest snapshot is returned.
+- [x] CoW table reads via `format("hudi_v2")` return correct data matching `format("hudi")`.
+- [x] CoW table reads via SQL `SELECT` with config `true` return correct data matching config `false`.
+- [x] Partitioned CoW tables return correct data with partition values.
+- [x] Column pruning works (only requested columns are read).
+- [x] Multiple commits: only latest snapshot is returned.
 
 ---
 
@@ -201,7 +201,7 @@ Not originally planned, but added alongside PR1:
 
 **Branch:** `dsv2-read-03-cow-filter-pushdown`
 
-**Depends on:** PR 2 (NOT STARTED)
+**Depends on:** PR 2 (DONE)
 
 ### Modified Files
 
@@ -368,7 +368,7 @@ PR 1: Coexistence POC                    ✅ DONE
       (DSv2 stub + DSv1 write fallback + catalog config + HoodieCatalog.loadTable)
   │
   v
-PR 2: CoW Snapshot Read                  ⬜ NOT STARTED
+PR 2: CoW Snapshot Read                  ✅ DONE
       (HoodieFileIndex wiring + base file reading)
   │
   v
