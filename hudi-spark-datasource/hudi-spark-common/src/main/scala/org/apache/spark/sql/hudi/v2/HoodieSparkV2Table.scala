@@ -39,7 +39,7 @@ import scala.collection.JavaConverters.{mapAsJavaMapConverter, setAsJavaSetConve
 /**
  * DSv2 table implementation for Hudi.
  *
- * Read path: returns a stub [[HoodieScanBuilder]] that produces correct schema but empty results.
+ * Read path: uses [[HoodieScanBuilder]] to build CoW snapshot scans via [[HoodieFileIndex]].
  * Write path: falls back to DSv1 via [[V2TableWithV1Fallback]] and [[HoodieV1WriteBuilder]].
  *
  * Schema is resolved via [[HoodieCatalogTable]] (catalog path) or [[HoodieTableMetaClient]] (DataFrame path).
@@ -84,7 +84,11 @@ case class HoodieSparkV2Table(spark: SparkSession,
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new HoodieScanBuilder(tableSchema)
+    import scala.collection.JavaConverters.mapAsScalaMapConverter
+    val tableProps = properties().asScala.toMap
+    val scanOpts = options.asCaseSensitiveMap().asScala.toMap
+    val mergedOpts = tableProps ++ scanOpts
+    new HoodieScanBuilder(spark, metaClient, tableSchema, mergedOpts)
   }
 
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
