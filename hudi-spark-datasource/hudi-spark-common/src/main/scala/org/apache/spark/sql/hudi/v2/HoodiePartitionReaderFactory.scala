@@ -25,21 +25,36 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
 /**
- * Factory that creates [[HoodiePartitionReader]] instances for DSv2 CoW snapshot reads.
+ * Factory that creates partition readers for DSv2 snapshot reads.
+ * Routes to [[HoodiePartitionReader]] for CoW / base-only slices,
+ * and [[HoodieMorPartitionReader]] for slices with log files.
  */
 class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileReader],
                                    broadcastConf: Broadcast[SerializableConfiguration],
                                    readSchema: StructType,
                                    requiredDataSchema: StructType,
-                                   requiredPartitionSchema: StructType) extends PartitionReaderFactory {
+                                   requiredPartitionSchema: StructType,
+                                   morContext: Option[MorContext] = None) extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
-    new HoodiePartitionReader(
-      partition.asInstanceOf[HoodieInputPartition],
-      broadcastReader,
-      broadcastConf,
-      readSchema,
-      requiredDataSchema,
-      requiredPartitionSchema)
+    val hoodiePart = partition.asInstanceOf[HoodieInputPartition]
+    if (hoodiePart.logFiles.nonEmpty && morContext.isDefined) {
+      new HoodieMorPartitionReader(
+        hoodiePart,
+        broadcastReader,
+        broadcastConf,
+        readSchema,
+        requiredDataSchema,
+        requiredPartitionSchema,
+        morContext.get)
+    } else {
+      new HoodiePartitionReader(
+        hoodiePart,
+        broadcastReader,
+        broadcastConf,
+        readSchema,
+        requiredDataSchema,
+        requiredPartitionSchema)
+    }
   }
 }

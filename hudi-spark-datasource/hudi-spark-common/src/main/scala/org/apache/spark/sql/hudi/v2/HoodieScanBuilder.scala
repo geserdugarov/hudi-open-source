@@ -17,9 +17,13 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.HoodieBaseRelation.convertToHoodieSchema
 import org.apache.hudi.HoodieFileIndex
 import org.apache.hudi.SparkAdapterSupport
+import org.apache.hudi.common.config.HoodieReaderConfig
+import org.apache.hudi.common.model.{HoodieLogFile, HoodieTableType}
 import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.table.TableSchemaResolver
 
 import org.apache.spark.sql.HoodieCatalystExpressionUtils
 import org.apache.spark.sql.SparkSession
@@ -29,6 +33,8 @@ import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
+
+import scala.collection.JavaConverters._
 
 /**
  * Scan builder for DSv2 CoW snapshot reads.
@@ -47,8 +53,11 @@ class HoodieScanBuilder(spark: SparkSession,
   private var partitionFilterExprs: Seq[Expression] = Seq.empty
   private var dataFilterExprs: Seq[Expression] = Seq.empty
 
+  private val isMoR: Boolean =
+    metaClient.getTableConfig.getTableType == HoodieTableType.MERGE_ON_READ
+
   private lazy val fileIndex = HoodieFileIndex(spark, metaClient, None, options,
-    includeLogFiles = false, shouldEmbedFileSlices = false)
+    includeLogFiles = isMoR, shouldEmbedFileSlices = false)
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
     val (pushed, postScan) = filters.partition { f =>
@@ -95,8 +104,9 @@ class HoodieScanBuilder(spark: SparkSession,
     val fileSlicesPerPartition = fileIndex.filterFileSlices(dataFilterExprs, partitionFilterExprs)
 
     val partitions = fileSlicesPerPartition.flatMap { case (partitionOpt, fileSlices) =>
-      fileSlices.filter(fs => fs.getBaseFile.isPresent).map { fs =>
-        val baseFile = fs.getBaseFile.get()
+      fileSlices.filter(fs => fs.getBaseFile.isPresent || fs.hasLogFiles).map { fs =>
+        val baseFilePath = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getPath else ""
+        val baseFileLength = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getFileSize else 0L
         val allPartValues = partitionOpt.map(_.getValues).getOrElse(Array.empty[AnyRef])
 
         val partValues = if (requiredPartitionSchema.isEmpty) {
@@ -108,9 +118,42 @@ class HoodieScanBuilder(spark: SparkSession,
           }
         }
 
-        HoodieInputPartition(0, baseFile.getPath, baseFile.getFileSize, partValues)
+        val logFiles = fs.getLogFiles.sorted(HoodieLogFile.getLogFileComparator)
+          .iterator().asScala.toList
+        val relPartPath = partitionOpt.map(_.getPath).getOrElse("")
+
+        HoodieInputPartition(0, baseFilePath, baseFileLength, partValues, logFiles, relPartPath)
       }
     }.zipWithIndex.map { case (p, i) => p.copy(index = i) }.toArray[InputPartition]
+
+    val morCtx = if (isMoR) {
+      val tableName = metaClient.getTableConfig.getTableName
+      // Use TableSchemaResolver to get the full Avro schema (with meta fields),
+      // matching what DSv1's HoodieBaseRelation uses for HoodieFileGroupReader.withDataSchema
+      val schemaResolver = new TableSchemaResolver(metaClient)
+      val tableDataSchema = schemaResolver.getTableSchema
+      val requiredMergeSchema = convertToHoodieSchema(requiredDataSchema, tableName)
+
+      val latestCommitTimestamp = metaClient.getCommitsAndCompactionTimeline
+        .filterCompletedInstants.lastInstant()
+        .map[String](_.requestedTime)
+        .orElse(null)
+
+      val mergeType = options.getOrElse(
+        HoodieReaderConfig.MERGE_TYPE.key(),
+        HoodieReaderConfig.MERGE_TYPE.defaultValue())
+
+      Some(MorContext(
+        latestCommitTimestamp,
+        tableDataSchema,
+        requiredMergeSchema,
+        requiredDataSchema,
+        metaClient.getBasePath.toString,
+        mergeType,
+        options))
+    } else {
+      None
+    }
 
     new HoodieBatchScan(
       requiredSchema,
@@ -119,6 +162,7 @@ class HoodieScanBuilder(spark: SparkSession,
       broadcastConf,
       requiredDataSchema,
       requiredPartitionSchema,
-      _pushedFilters)
+      _pushedFilters,
+      morCtx)
   }
 }
