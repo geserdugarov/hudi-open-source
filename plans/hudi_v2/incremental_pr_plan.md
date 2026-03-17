@@ -236,7 +236,7 @@ Not originally planned, but added alongside PR1:
 
 ## PR 4: MoR Snapshot Read — Base + Log File Merging
 
-**Status: NOT STARTED**
+**Status: DONE**
 
 **Goal:** `format("hudi_v2")` and SQL with config `true` read MoR tables by merging base files with log files.
 
@@ -271,11 +271,11 @@ Not originally planned, but added alongside PR1:
 
 ### Verification Checklist
 
-- [ ] MoR tables with only base files return correct data.
-- [ ] MoR tables with base + log files return correctly merged data.
-- [ ] MoR tables with log-only file groups return correct data.
-- [ ] Deletes in log files are properly applied.
-- [ ] Results match `format("hudi")` / SQL with config `false` for all cases.
+- [x] MoR tables with only base files return correct data.
+- [x] MoR tables with base + log files return correctly merged data.
+- [x] MoR tables with log-only file groups return correct data.
+- [x] Deletes in log files are properly applied.
+- [x] Results match `format("hudi")` / SQL with config `false` for all cases.
 
 ---
 
@@ -287,7 +287,7 @@ Not originally planned, but added alongside PR1:
 
 **Branch:** `dsv2-read-05-incremental-cdc`
 
-**Depends on:** PR 4 (NOT STARTED)
+**Depends on:** PR 4 (DONE)
 
 ### Modified Files
 
@@ -376,7 +376,7 @@ PR 3: Filter Pushdown                    ✅ DONE
       (partition pruning + data skipping)
   │
   v
-PR 4: MoR Snapshot Read                  ⬜ NOT STARTED
+PR 4: MoR Snapshot Read                  ✅ DONE
       (base + log file merging)
   │
   v
