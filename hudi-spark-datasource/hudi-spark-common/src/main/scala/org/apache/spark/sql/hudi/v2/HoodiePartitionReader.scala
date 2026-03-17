@@ -43,15 +43,19 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
                             readSchema: StructType,
                             requiredDataSchema: StructType,
                             requiredPartitionSchema: StructType,
-                            includedCommitTimes: Option[Set[String]] = None)
+                            includedCommitTimes: Option[Set[String]] = None,
+                            pushedLimit: Option[Int] = None)
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val iter: Iterator[InternalRow] = createIterator()
   private var current: InternalRow = _
+  private var rowCount: Int = 0
 
   override def next(): Boolean = {
-    if (iter.hasNext) {
+    val limitReached = pushedLimit.exists(rowCount >= _)
+    if (!limitReached && iter.hasNext) {
       current = iter.next()
+      rowCount += 1
       true
     } else {
       false

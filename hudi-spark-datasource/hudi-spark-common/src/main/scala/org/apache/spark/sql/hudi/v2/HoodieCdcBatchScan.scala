@@ -20,7 +20,7 @@ package org.apache.spark.sql.hudi.v2
 import org.apache.hudi.HoodieTableSchema
 
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan}
+import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan, Statistics, SupportsReportStatistics}
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
@@ -34,7 +34,7 @@ class HoodieCdcBatchScan(cdcReadSchema: StructType,
                           broadcastConf: Broadcast[SerializableConfiguration],
                           basePath: String,
                           originTableSchema: HoodieTableSchema,
-                          options: Map[String, String]) extends Scan with Batch {
+                          options: Map[String, String]) extends Scan with Batch with SupportsReportStatistics {
 
   override def readSchema(): StructType = cdcReadSchema
 
@@ -52,5 +52,11 @@ class HoodieCdcBatchScan(cdcReadSchema: StructType,
       originTableSchema,
       cdcReadSchema,
       options)
+  }
+
+  override def estimateStatistics(): Statistics = {
+    // Estimate based on partition count; CDC partitions don't expose file sizes
+    val estimatedSize = inputPartitions.length.toLong * 1024 * 1024 // rough 1MB per partition
+    new HoodieStatistics(estimatedSize)
   }
 }
