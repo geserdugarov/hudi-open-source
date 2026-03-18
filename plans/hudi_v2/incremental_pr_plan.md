@@ -328,7 +328,7 @@ Not originally planned, but added alongside PR1:
 
 ## PR 6: Advanced Pushdowns — Aggregates, Limit, TopN
 
-**Status: NOT STARTED**
+**Status: DONE**
 
 **Goal:** Leverage DSv2 pushdown interfaces for performance optimizations not possible with DSv1.
 
@@ -384,7 +384,7 @@ PR 5: Incremental & CDC Queries          ✅ DONE
       (query type routing + incremental/CDC readers)
   │
   v
-PR 6: Advanced Pushdowns                 ⬜ NOT STARTED
+PR 6: Advanced Pushdowns                 ✅ DONE
       (aggregates, limit, TopN)
 ```
 

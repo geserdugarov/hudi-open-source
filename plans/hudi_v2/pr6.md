@@ -1,5 +1,7 @@
 # PR6: Advanced Pushdowns + Mark PR5 Done
 
+**Status: DONE**
+
 ## Context
 
 PRs 1-5 of the DSv2 read implementation (RFC-98) are complete, delivering snapshot (CoW+MoR),
