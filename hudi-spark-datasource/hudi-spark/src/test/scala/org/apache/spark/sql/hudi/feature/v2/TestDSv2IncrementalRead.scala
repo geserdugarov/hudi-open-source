@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.hudi.v2
+package org.apache.spark.sql.hudi.feature.v2
 
-import org.apache.hudi.DataSourceReadOptions
+import org.apache.hudi.{DataSourceReadOptions, HoodieSparkUtils}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 import org.apache.hudi.testutils.SparkClientFunctionalTestHarness
@@ -25,8 +25,9 @@ import org.apache.hudi.testutils.SparkClientFunctionalTestHarness.getSparkSqlCon
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SaveMode
-import org.junit.jupiter.api.{Tag, Test}
+import org.junit.jupiter.api.{BeforeEach, Tag, Test}
 import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * Functional tests for incremental and read-optimized queries via the DSv2 path.
@@ -35,6 +36,12 @@ import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 class TestDSv2IncrementalRead extends SparkClientFunctionalTestHarness {
 
   override def conf: SparkConf = conf(getSparkSqlConf)
+
+  @BeforeEach
+  def checkSparkVersion(): Unit = {
+    assumeTrue(HoodieSparkUtils.gteqSpark3_5,
+      "DSv2 read tests require Spark 3.5 or later")
+  }
 
   private def getCompletionTime(path: String): String = {
     val storageConf = new HadoopStorageConfiguration(spark.sessionState.newHadoopConf())

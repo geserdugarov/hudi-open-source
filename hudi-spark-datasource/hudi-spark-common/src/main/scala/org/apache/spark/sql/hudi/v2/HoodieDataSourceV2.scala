@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.hudi.v2
 
-import org.apache.hudi.{DataSourceWriteOptions, HoodieEmptyRelation, HoodieSparkSqlWriter}
+import org.apache.hudi.{DataSourceWriteOptions, HoodieEmptyRelation, HoodieSparkSqlWriter, HoodieSparkUtils}
 import org.apache.hudi.exception.HoodieException
 
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession, SQLContext}
@@ -50,6 +50,11 @@ class HoodieDataSourceV2 extends TableProvider with DataSourceRegister with Crea
   override def getTable(schema: StructType,
                         partitioning: Array[Transform],
                         properties: util.Map[String, String]): Table = {
+    if (!HoodieSparkUtils.gteqSpark3_5) {
+      throw new HoodieException(
+        "The 'hudi_v2' data source requires Spark 3.5 or later. " +
+          "Use 'hudi' format instead, or upgrade Spark.")
+    }
     val options = new CaseInsensitiveStringMap(properties)
     val path = options.get("path")
     if (path == null) {

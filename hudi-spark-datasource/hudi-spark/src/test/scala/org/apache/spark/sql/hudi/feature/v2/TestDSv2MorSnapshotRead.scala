@@ -15,16 +15,17 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.hudi.v2
+package org.apache.spark.sql.hudi.feature.v2
 
-import org.apache.hudi.DataSourceReadOptions
+import org.apache.hudi.{DataSourceReadOptions, HoodieSparkUtils}
 import org.apache.hudi.testutils.SparkClientFunctionalTestHarness
 import org.apache.hudi.testutils.SparkClientFunctionalTestHarness.getSparkSqlConf
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SaveMode
-import org.junit.jupiter.api.{Tag, Test}
+import org.junit.jupiter.api.{BeforeEach, Tag, Test}
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * Functional tests for MoR snapshot reading via the DSv2 path.
@@ -33,6 +34,12 @@ import org.junit.jupiter.api.Assertions.assertEquals
 class TestDSv2MorSnapshotRead extends SparkClientFunctionalTestHarness {
 
   override def conf: SparkConf = conf(getSparkSqlConf)
+
+  @BeforeEach
+  def checkSparkVersion(): Unit = {
+    assumeTrue(HoodieSparkUtils.gteqSpark3_5,
+      "DSv2 read tests require Spark 3.5 or later")
+  }
 
   private val morOptions: Map[String, String] = Map(
     "hoodie.datasource.write.table.type" -> "MERGE_ON_READ"

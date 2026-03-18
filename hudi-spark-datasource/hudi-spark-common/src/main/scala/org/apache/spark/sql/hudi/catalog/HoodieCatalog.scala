@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.hudi.catalog
 
-import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions, SparkAdapterSupport}
+import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions, HoodieSparkUtils, SparkAdapterSupport}
 import org.apache.hudi.client.common.HoodieSparkEngineContext
 import org.apache.hudi.common.config.HoodieMetadataConfig
 import org.apache.hudi.common.table.HoodieTableMetaClient
@@ -151,11 +151,17 @@ class HoodieCatalog extends DelegatingCatalogExtension
         //
         // Check out HUDI-4178 for more details
         if (v2ReadEnabled) {
-          HoodieSparkV2Table(
-            spark = spark,
-            path = catalogTable.location.toString,
-            catalogTable = Some(catalogTable),
-            tableIdentifier = Some(ident.toString))
+          if (HoodieSparkUtils.gteqSpark3_5) {
+            HoodieSparkV2Table(
+              spark = spark,
+              path = catalogTable.location.toString,
+              catalogTable = Some(catalogTable),
+              tableIdentifier = Some(ident.toString))
+          } else {
+            logWarning("DSv2 read (hoodie.datasource.read.use.v2=true) requires Spark 3.5+. " +
+              "Falling back to V1 read path.")
+            v2Table.v1TableWrapper
+          }
         } else if (schemaEvolutionEnabled) {
           v2Table
         } else {
