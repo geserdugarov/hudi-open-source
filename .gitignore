@@ -15,6 +15,7 @@ metastore_db/
 .java-version
 
 # Private settings
+benchmarks/.env
 .env
 
 # Package Files #
