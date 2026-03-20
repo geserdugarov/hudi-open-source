@@ -17,18 +17,24 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.common.model.HoodieLogFile
+
 import org.apache.spark.sql.connector.read.InputPartition
 
 /**
- * Input partition for the DSv2 read path, representing a single base file to read.
+ * Input partition for the DSv2 read path, representing a single file slice to read.
  *
  * @param index           partition index
- * @param baseFilePath    full path to the base (Parquet) file
- * @param baseFileLength  file size in bytes
+ * @param baseFilePath    full path to the base (Parquet) file ("" if log-only)
+ * @param baseFileLength  file size in bytes (0 if log-only)
  * @param partitionValues partition column values in Spark internal format (e.g. UTF8String),
  *                        ordered to match the requiredPartitionSchema
+ * @param logFiles        log files for MoR merge (empty for CoW)
+ * @param partitionPath   relative partition path (for MoR metaClient rebuild)
  */
 case class HoodieInputPartition(index: Int,
                                 baseFilePath: String,
                                 baseFileLength: Long,
-                                partitionValues: Array[AnyRef]) extends InputPartition
+                                partitionValues: Array[AnyRef],
+                                logFiles: List[HoodieLogFile] = List.empty,
+                                partitionPath: String = "") extends InputPartition

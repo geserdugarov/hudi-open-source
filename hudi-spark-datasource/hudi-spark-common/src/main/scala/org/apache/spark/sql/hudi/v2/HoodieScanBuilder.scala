@@ -18,9 +18,11 @@
 package org.apache.spark.sql.hudi.v2
 
 import org.apache.hudi.{HoodieFileIndex, SparkAdapterSupport}
-import org.apache.hudi.common.config.HoodieMetadataConfig
+import org.apache.hudi.HoodieBaseRelation.convertToHoodieSchema
+import org.apache.hudi.common.config.{HoodieMetadataConfig, HoodieReaderConfig}
 import org.apache.hudi.common.engine.HoodieLocalEngineContext
-import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.model.{HoodieLogFile, HoodieTableType}
+import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.util.collection.Pair
 import org.apache.hudi.metadata.{HoodieBackedTableMetadata, MetadataPartitionType}
 import org.apache.hudi.stats.HoodieColumnRangeMetadata
@@ -66,8 +68,11 @@ class HoodieScanBuilder(spark: SparkSession,
   private var pushedAggregation: Option[Aggregation] = None
   private var aggregateResult: Option[Array[InternalRow]] = None
 
+  private val isMOR: Boolean =
+    metaClient.getTableConfig.getTableType == HoodieTableType.MERGE_ON_READ
+
   private lazy val fileIndex = HoodieFileIndex(spark, metaClient, None, options,
-    includeLogFiles = false, shouldEmbedFileSlices = false)
+    includeLogFiles = isMOR, shouldEmbedFileSlices = false)
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
     val (pushed, postScan) = filters.partition { f =>
@@ -159,9 +164,9 @@ class HoodieScanBuilder(spark: SparkSession,
     val fileSlicesPerPartition = fileIndex.filterFileSlices(dataFilterExprs, partitionFilterExprs)
 
     val partitions = fileSlicesPerPartition.flatMap { case (partitionOpt, fileSlices) =>
-      fileSlices.filter(_.getBaseFile.isPresent).map { fs =>
-        val baseFilePath = fs.getBaseFile.get().getPath
-        val baseFileLength = fs.getBaseFile.get().getFileSize
+      fileSlices.filter(fs => fs.getBaseFile.isPresent || fs.hasLogFiles).map { fs =>
+        val baseFilePath = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getPath else ""
+        val baseFileLength = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getFileSize else 0L
         val allPartValues = partitionOpt.map(_.getValues).getOrElse(Array.empty[AnyRef])
 
         val partValues = if (requiredPartitionSchema.isEmpty) {
@@ -173,9 +178,40 @@ class HoodieScanBuilder(spark: SparkSession,
           }
         }
 
-        HoodieInputPartition(0, baseFilePath, baseFileLength, partValues)
+        val logFiles = fs.getLogFiles.sorted(HoodieLogFile.getLogFileComparator)
+          .iterator().asScala.toList
+        val relPartPath = partitionOpt.map(_.getPath).getOrElse("")
+
+        HoodieInputPartition(0, baseFilePath, baseFileLength, partValues, logFiles, relPartPath)
       }
     }.zipWithIndex.map { case (p, i) => p.copy(index = i) }.toArray[InputPartition]
+
+    val morCtx = if (isMOR) {
+      val tableName = metaClient.getTableConfig.getTableName
+      val schemaResolver = new TableSchemaResolver(metaClient)
+      val tableDataSchema = schemaResolver.getTableSchema
+      val requiredMergeSchema = convertToHoodieSchema(requiredDataSchema, tableName)
+
+      val latestCommitTimestamp = metaClient.getCommitsAndCompactionTimeline
+        .filterCompletedInstants.lastInstant()
+        .map[String](_.requestedTime)
+        .orElse(null)
+
+      val mergeType = options.getOrElse(
+        HoodieReaderConfig.MERGE_TYPE.key(),
+        HoodieReaderConfig.MERGE_TYPE.defaultValue())
+
+      Some(MorContext(
+        latestCommitTimestamp,
+        tableDataSchema,
+        requiredMergeSchema,
+        requiredDataSchema,
+        metaClient.getBasePath.toString,
+        mergeType,
+        options))
+    } else {
+      None
+    }
 
     new HoodieBatchScan(
       requiredSchema,
@@ -185,7 +221,8 @@ class HoodieScanBuilder(spark: SparkSession,
       requiredDataSchema,
       requiredPartitionSchema,
       _pushedFilters,
-      pushedLimit)
+      pushedLimit,
+      morCtx)
   }
 
   private def tryComputeAggregates(aggregation: Aggregation): Option[Array[InternalRow]] = {

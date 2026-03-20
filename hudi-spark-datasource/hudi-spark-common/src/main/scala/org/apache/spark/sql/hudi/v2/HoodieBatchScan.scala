@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.common.schema.HoodieSchema
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan, Statistics, SupportsReportStatistics}
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
@@ -25,7 +27,26 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
 /**
- * Batch scan for snapshot reads via DSv2 (COW).
+ * Context for MOR snapshot reads. All fields are Serializable for executor shipping.
+ *
+ * @param latestCommitTimestamp latest completed commit timestamp
+ * @param tableDataSchema      full table Avro schema for HoodieFileGroupReader.withDataSchema
+ * @param requiredMergeSchema  augmented required Avro schema for HoodieFileGroupReader.withRequestedSchema
+ * @param mergeStructType      StructType corresponding to requiredMergeSchema (for projection)
+ * @param basePath             table base path for rebuilding metaClient on executor
+ * @param mergeType            merge type (e.g. "payload_combine")
+ * @param options              table options
+ */
+case class MorContext(latestCommitTimestamp: String,
+                      tableDataSchema: HoodieSchema,
+                      requiredMergeSchema: HoodieSchema,
+                      mergeStructType: StructType,
+                      basePath: String,
+                      mergeType: String,
+                      options: Map[String, String])
+
+/**
+ * Batch scan for snapshot reads via DSv2 (CoW and MOR).
  */
 class HoodieBatchScan(readSchema: StructType,
                       inputPartitions: Array[InputPartition],
@@ -34,7 +55,8 @@ class HoodieBatchScan(readSchema: StructType,
                       requiredDataSchema: StructType,
                       requiredPartitionSchema: StructType,
                       pushedFilters: Array[Filter] = Array.empty,
-                      pushedLimit: Option[Int] = None) extends Scan with Batch with SupportsReportStatistics {
+                      pushedLimit: Option[Int] = None,
+                      morContext: Option[MorContext] = None) extends Scan with Batch with SupportsReportStatistics {
 
   override def readSchema(): StructType = readSchema
 
@@ -59,7 +81,8 @@ class HoodieBatchScan(readSchema: StructType,
       readSchema,
       requiredDataSchema,
       requiredPartitionSchema,
-      pushedLimit)
+      pushedLimit,
+      morContext)
   }
 
   override def estimateStatistics(): Statistics = {
