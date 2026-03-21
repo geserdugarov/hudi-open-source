@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.DataSourceReadOptions
+import org.apache.hudi.cdc.HoodieCDCFileIndex
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 
@@ -71,7 +73,16 @@ case class HoodieSparkV2Table(spark: SparkSession,
     case None => metaClient.getTableConfig.getTableName
   }
 
-  override def schema(): StructType = tableSchema
+  override def schema(): StructType = {
+    val queryType = options.getOrDefault(
+      DataSourceReadOptions.QUERY_TYPE.key, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL)
+    val incrementalFormat = options.getOrDefault(
+      DataSourceReadOptions.INCREMENTAL_FORMAT.key, DataSourceReadOptions.INCREMENTAL_FORMAT_LATEST_STATE_VAL)
+    val isCdcQuery = queryType == DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL &&
+      incrementalFormat == DataSourceReadOptions.INCREMENTAL_FORMAT_CDC_VAL
+    if (isCdcQuery) HoodieCDCFileIndex.FULL_CDC_SPARK_SCHEMA
+    else tableSchema
+  }
 
   override def capabilities(): util.Set[TableCapability] = Set(
     BATCH_READ, V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE, ACCEPT_ANY_SCHEMA

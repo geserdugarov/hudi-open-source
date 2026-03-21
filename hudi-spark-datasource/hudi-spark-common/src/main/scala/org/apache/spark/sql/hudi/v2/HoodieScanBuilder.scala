@@ -17,12 +17,14 @@
 
 package org.apache.spark.sql.hudi.v2
 
-import org.apache.hudi.{DataSourceReadOptions, HoodieFileIndex, SparkAdapterSupport}
+import org.apache.hudi.{DataSourceReadOptions, HoodieFileIndex, HoodieSchemaConversionUtils, HoodieTableSchema, SparkAdapterSupport}
 import org.apache.hudi.HoodieBaseRelation.convertToHoodieSchema
+import org.apache.hudi.cdc.{HoodieCDCFileGroupSplit, HoodieCDCFileIndex}
 import org.apache.hudi.common.config.{HoodieMetadataConfig, HoodieReaderConfig}
 import org.apache.hudi.common.engine.HoodieLocalEngineContext
 import org.apache.hudi.common.model.{HoodieLogFile, HoodieTableType}
 import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.table.cdc.HoodieCDCExtractor
 import org.apache.hudi.common.table.log.InstantRange
 import org.apache.hudi.common.table.read.IncrementalQueryAnalyzer
 import org.apache.hudi.common.table.timeline.TimelineUtils.getCommitMetadata
@@ -64,7 +66,19 @@ class HoodieScanBuilder(spark: SparkSession,
 
   private val log = LoggerFactory.getLogger(getClass)
 
-  private var requiredSchema: StructType = tableSchema
+  private val queryType = options.getOrElse(
+    DataSourceReadOptions.QUERY_TYPE.key, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL)
+  private val incrementalFormat = options.getOrElse(
+    DataSourceReadOptions.INCREMENTAL_FORMAT.key, DataSourceReadOptions.INCREMENTAL_FORMAT_LATEST_STATE_VAL)
+  private val isCdcQuery = queryType == DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL &&
+    incrementalFormat == DataSourceReadOptions.INCREMENTAL_FORMAT_CDC_VAL
+  private val isIncrementalQuery = queryType == DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL && !isCdcQuery
+  private val isReadOptimized = queryType == DataSourceReadOptions.QUERY_TYPE_READ_OPTIMIZED_OPT_VAL
+
+  private val effectiveTableSchema: StructType =
+    if (isCdcQuery) HoodieCDCFileIndex.FULL_CDC_SPARK_SCHEMA else tableSchema
+
+  private var requiredSchema: StructType = effectiveTableSchema
   private var _pushedFilters: Array[Filter] = Array.empty
   private var partitionFilterExprs: Seq[Expression] = Seq.empty
   private var dataFilterExprs: Seq[Expression] = Seq.empty
@@ -77,34 +91,34 @@ class HoodieScanBuilder(spark: SparkSession,
   private val isMOR: Boolean =
     metaClient.getTableConfig.getTableType == HoodieTableType.MERGE_ON_READ
 
-  private val queryType = options.getOrElse(
-    DataSourceReadOptions.QUERY_TYPE.key, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL)
-  private val isIncrementalQuery = queryType == DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL
-  private val isReadOptimized = queryType == DataSourceReadOptions.QUERY_TYPE_READ_OPTIMIZED_OPT_VAL
-
   private lazy val fileIndex = HoodieFileIndex(spark, metaClient, None, options,
     includeLogFiles = isMOR && !isReadOptimized, shouldEmbedFileSlices = false)
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
-    val (pushed, postScan) = filters.partition { f =>
-      HoodieCatalystExpressionUtils.convertToCatalystExpression(f, tableSchema).isDefined
+    if (isCdcQuery) {
+      _pushedFilters = Array.empty
+      filters
+    } else {
+      val (pushed, postScan) = filters.partition { f =>
+        HoodieCatalystExpressionUtils.convertToCatalystExpression(f, effectiveTableSchema).isDefined
+      }
+
+      val expressions = pushed.flatMap(f =>
+        HoodieCatalystExpressionUtils.convertToCatalystExpression(f, effectiveTableSchema))
+
+      val (partFilters, datFilters) = HoodieCatalystExpressionUtils
+        .splitPartitionAndDataPredicates(spark, expressions, fileIndex.partitionSchema.fieldNames)
+
+      partitionFilterExprs = partFilters.toSeq
+      dataFilterExprs = datFilters.toSeq
+
+      _pushedFilters = pushed
+      hasPostScanFilters = postScan.nonEmpty
+
+      val partFieldNames = fileIndex.partitionSchema.fieldNames.toSet
+      val dataFilterArr = pushed.filterNot(f => f.references.forall(partFieldNames.contains))
+      postScan ++ dataFilterArr
     }
-
-    val expressions = pushed.flatMap(f =>
-      HoodieCatalystExpressionUtils.convertToCatalystExpression(f, tableSchema))
-
-    val (partFilters, datFilters) = HoodieCatalystExpressionUtils
-      .splitPartitionAndDataPredicates(spark, expressions, fileIndex.partitionSchema.fieldNames)
-
-    partitionFilterExprs = partFilters.toSeq
-    dataFilterExprs = datFilters.toSeq
-
-    _pushedFilters = pushed
-    hasPostScanFilters = postScan.nonEmpty
-
-    val partFieldNames = fileIndex.partitionSchema.fieldNames.toSet
-    val dataFilterArr = pushed.filterNot(f => f.references.forall(partFieldNames.contains))
-    postScan ++ dataFilterArr
   }
 
   override def pushedFilters(): Array[Filter] = _pushedFilters
@@ -119,7 +133,7 @@ class HoodieScanBuilder(spark: SparkSession,
   }
 
   override def pushAggregation(aggregation: Aggregation): Boolean = {
-    if (isIncrementalQuery
+    if (isIncrementalQuery || isCdcQuery
       || aggregation.groupByExpressions().nonEmpty
       || !MetadataPartitionType.COLUMN_STATS.isMetadataPartitionAvailable(metaClient)) {
       false
@@ -151,7 +165,9 @@ class HoodieScanBuilder(spark: SparkSession,
   }
 
   override def build(): Scan = {
-    if (isIncrementalQuery) {
+    if (isCdcQuery) {
+      buildCdcScan()
+    } else if (isIncrementalQuery) {
       buildIncrementalScan()
     } else {
       aggregateResult match {
@@ -299,6 +315,55 @@ class HoodieScanBuilder(spark: SparkSession,
         morCtx,
         Some(includedCommitTimes))
     }
+  }
+
+  private def buildCdcScan(): Scan = {
+    if (!options.contains(DataSourceReadOptions.START_COMMIT.key)) {
+      throw new HoodieException(s"CDC Query should provide the valid start completion time " +
+        s"through the option ${DataSourceReadOptions.START_COMMIT.key}")
+    }
+
+    val hadoopConf = spark.sessionState.newHadoopConf()
+    val readerOptions = options + (FileFormat.OPTION_RETURNING_BATCH -> "false")
+    val reader = sparkAdapter.createParquetFileReader(false, spark.sessionState.conf, readerOptions, hadoopConf)
+    val broadcastReader = spark.sparkContext.broadcast(reader)
+    val broadcastConf = spark.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+
+    val startCommit = options(DataSourceReadOptions.START_COMMIT.key)
+    val endCommit = options.getOrElse(DataSourceReadOptions.END_COMMIT.key, {
+      val lastInstant = metaClient.getActiveTimeline.lastInstant()
+      if (lastInstant.isPresent) lastInstant.get().requestedTime
+      else throw new HoodieException("No valid instant in Active Timeline.")
+    })
+
+    val instantRange = InstantRange.builder()
+      .startInstant(startCommit)
+      .endInstant(endCommit)
+      .nullableBoundary(true)
+      .rangeType(InstantRange.RangeType.OPEN_CLOSED)
+      .build()
+
+    val cdcExtractor = new HoodieCDCExtractor(metaClient, instantRange, false)
+    val cdcFileSplits = cdcExtractor.extractCDCFileSplits()
+
+    val partitions = cdcFileSplits.asScala.zipWithIndex.map { case ((_, fileSplits), idx) =>
+      val sortedSplits = fileSplits.asScala.sortBy(_.getInstant).toArray
+      HoodieCdcInputPartition(idx, HoodieCDCFileGroupSplit(sortedSplits)): InputPartition
+    }.toArray
+
+    val schemaResolver = new TableSchemaResolver(metaClient)
+    val avroSchema = schemaResolver.getTableSchema
+    val sparkSchema = HoodieSchemaConversionUtils.convertHoodieSchemaToStructType(avroSchema)
+    val originTableSchema = HoodieTableSchema(sparkSchema, avroSchema)
+
+    new HoodieCdcBatchScan(
+      requiredSchema,
+      partitions,
+      broadcastReader,
+      broadcastConf,
+      metaClient.getBasePath.toString,
+      originTableSchema,
+      options)
   }
 
   private def buildPartitions(
