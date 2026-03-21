@@ -21,7 +21,7 @@ import org.apache.hudi.SparkAdapterSupport
 import org.apache.hudi.SparkFileFormatInternalRowReaderContext
 import org.apache.hudi.common.config.{HoodieReaderConfig, TypedProperties}
 import org.apache.hudi.common.config.HoodieMemoryConfig.MAX_MEMORY_FOR_MERGE
-import org.apache.hudi.common.model.HoodieBaseFile
+import org.apache.hudi.common.model.{HoodieBaseFile, HoodieRecord}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.table.read.HoodieFileGroupReader
 import org.apache.hudi.common.util.{Option => HOption}
@@ -53,7 +53,8 @@ class HoodieMorPartitionReader(partition: HoodieInputPartition,
                                 readSchema: StructType,
                                 requiredDataSchema: StructType,
                                 requiredPartitionSchema: StructType,
-                                morContext: MorContext)
+                                morContext: MorContext,
+                                includedCommitTimes: Option[Set[String]] = None)
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val iter: Iterator[InternalRow] = createIterator()
@@ -123,16 +124,54 @@ class HoodieMorPartitionReader(partition: HoodieInputPartition,
     val mergeStructType = morContext.mergeStructType
     val partValues = InternalRow.fromSeq(partition.partitionValues.toSeq)
 
+    // Apply commit time filtering for incremental queries
+    val filteredIter = if (includedCommitTimes.isDefined) {
+      val commitTimeField = HoodieRecord.COMMIT_TIME_METADATA_FIELD
+      val commitTimeIdx = mergeStructType.fieldIndex(commitTimeField)
+      val commitTimes = includedCommitTimes.get
+      new Iterator[InternalRow] with Closeable {
+        private var nextRow: InternalRow = _
+        private var hasNextRow: Boolean = advance()
+        private def advance(): Boolean = {
+          var found = false
+          while (!found && mergedIter.hasNext) {
+            val row = mergedIter.next()
+            val ct = row.getUTF8String(commitTimeIdx)
+            if (ct != null && commitTimes.contains(ct.toString)) {
+              nextRow = row
+              found = true
+            }
+          }
+          found
+        }
+        override def hasNext: Boolean = hasNextRow
+        override def next(): InternalRow = {
+          val result = nextRow
+          hasNextRow = advance()
+          result
+        }
+        override def close(): Unit = mergedIter match {
+          case c: Closeable => c.close()
+          case _ =>
+        }
+      }
+    } else {
+      mergedIter
+    }
+
     // Project from merge schema to required data schema if mandatory fields were added
     val dataIter = if (mergeStructType != requiredDataSchema) {
       val dataProjection = HoodieCatalystExpressionUtils.generateUnsafeProjection(mergeStructType, requiredDataSchema)
       new Iterator[InternalRow] with Closeable {
-        override def hasNext: Boolean = mergedIter.hasNext
-        override def next(): InternalRow = dataProjection(mergedIter.next())
-        override def close(): Unit = mergedIter.close()
+        override def hasNext: Boolean = filteredIter.hasNext
+        override def next(): InternalRow = dataProjection(filteredIter.next())
+        override def close(): Unit = filteredIter match {
+          case c: Closeable => c.close()
+          case _ =>
+        }
       }
     } else {
-      mergedIter
+      filteredIter
     }
 
     // Append partition values and project to final readSchema (same pattern as HoodiePartitionReader)

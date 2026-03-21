@@ -56,7 +56,8 @@ class HoodieBatchScan(readSchema: StructType,
                       requiredPartitionSchema: StructType,
                       pushedFilters: Array[Filter] = Array.empty,
                       pushedLimit: Option[Int] = None,
-                      morContext: Option[MorContext] = None) extends Scan with Batch with SupportsReportStatistics {
+                      morContext: Option[MorContext] = None,
+                      includedCommitTimes: Option[Set[String]] = None) extends Scan with Batch with SupportsReportStatistics {
 
   override def readSchema(): StructType = readSchema
 
@@ -82,7 +83,8 @@ class HoodieBatchScan(readSchema: StructType,
       requiredDataSchema,
       requiredPartitionSchema,
       pushedLimit,
-      morContext)
+      morContext,
+      includedCommitTimes)
   }
 
   override def estimateStatistics(): Statistics = {

@@ -18,6 +18,7 @@
 package org.apache.spark.sql.hudi.v2
 
 import org.apache.hudi.SparkAdapterSupport
+import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.util.{Option => HOption}
 import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
@@ -27,7 +28,7 @@ import org.apache.spark.sql.HoodieCatalystExpressionUtils
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.util.SerializableConfiguration
 
 import java.io.Closeable
@@ -43,7 +44,8 @@ HoodiePartitionReader(partition: HoodieInputPartition,
                             readSchema: StructType,
                             requiredDataSchema: StructType,
                             requiredPartitionSchema: StructType,
-                            pushedLimit: Option[Int] = None)
+                            pushedLimit: Option[Int] = None,
+                            includedCommitTimes: Option[Set[String]] = None)
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private var rawIterator: Iterator[InternalRow] = _
@@ -74,6 +76,16 @@ HoodiePartitionReader(partition: HoodieInputPartition,
   private def createIterator(): Iterator[InternalRow] = {
     val partValues = InternalRow.fromSeq(partition.partitionValues.toSeq)
 
+    val commitTimeField = HoodieRecord.COMMIT_TIME_METADATA_FIELD
+    val needsCommitTimeFilter = includedCommitTimes.isDefined
+    val augmentedDataSchema = if (needsCommitTimeFilter && !requiredDataSchema.fieldNames.contains(commitTimeField)) {
+      StructType(requiredDataSchema.fields :+ readSchema.fields.find(_.name == commitTimeField)
+        .getOrElse(StructType(Seq(StructField(commitTimeField, StringType))).fields.head))
+    } else {
+      requiredDataSchema
+    }
+    val addedCommitTimeField = augmentedDataSchema != requiredDataSchema
+
     val pFile = sparkAdapter.getSparkPartitionedFileUtils
       .createPartitionedFile(partValues, new StoragePath(partition.baseFilePath), 0L, partition.baseFileLength)
 
@@ -82,12 +94,35 @@ HoodiePartitionReader(partition: HoodieInputPartition,
       pFile, requiredDataSchema, requiredPartitionSchema,
       HOption.empty(), Seq.empty, storageConf)
 
+    val filteredIter = if (needsCommitTimeFilter) {
+      val commitTimeIdx = augmentedDataSchema.fieldIndex(commitTimeField)
+      val commitTimes = includedCommitTimes.get
+      rawIterator.filter { row =>
+        val ct = row.getUTF8String(commitTimeIdx)
+        ct != null && commitTimes.contains(ct.toString)
+      }
+    } else {
+      rawIterator
+    }
+
+    val projectedIter = if (addedCommitTimeField) {
+      // The raw rows have schema: augmentedDataSchema ++ requiredPartitionSchema (partition values
+      // are appended by the parquet reader). We need to project away the added commit time field
+      // while preserving partition columns.
+      val fromSchema = StructType(augmentedDataSchema.fields ++ requiredPartitionSchema.fields)
+      val toSchema = StructType(requiredDataSchema.fields ++ requiredPartitionSchema.fields)
+      val projection = HoodieCatalystExpressionUtils.generateUnsafeProjection(fromSchema, toSchema)
+      filteredIter.map(row => projection(row))
+    } else {
+      filteredIter
+    }
+
     val readerOutputSchema = StructType(requiredDataSchema.fields ++ requiredPartitionSchema.fields)
     if (readerOutputSchema != readSchema) {
       val projection = HoodieCatalystExpressionUtils.generateUnsafeProjection(readerOutputSchema, readSchema)
-      rawIterator.map(row => projection(row))
+      projectedIter.map(row => projection(row))
     } else {
-      rawIterator
+      projectedIter
     }
   }
 }

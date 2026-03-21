@@ -35,7 +35,8 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
                                    requiredDataSchema: StructType,
                                    requiredPartitionSchema: StructType,
                                    pushedLimit: Option[Int] = None,
-                                   morContext: Option[MorContext] = None) extends PartitionReaderFactory {
+                                   morContext: Option[MorContext] = None,
+                                   includedCommitTimes: Option[Set[String]] = None) extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     val hoodiePart = partition.asInstanceOf[HoodieInputPartition]
@@ -47,7 +48,8 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
         readSchema,
         requiredDataSchema,
         requiredPartitionSchema,
-        morContext.get)
+        morContext.get,
+        includedCommitTimes)
     } else {
       new HoodiePartitionReader(
         hoodiePart,
@@ -56,7 +58,8 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
         readSchema,
         requiredDataSchema,
         requiredPartitionSchema,
-        pushedLimit)
+        pushedLimit,
+        includedCommitTimes)
     }
   }
 }

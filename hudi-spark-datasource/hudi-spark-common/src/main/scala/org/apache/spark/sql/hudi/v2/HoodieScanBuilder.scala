@@ -17,14 +17,20 @@
 
 package org.apache.spark.sql.hudi.v2
 
-import org.apache.hudi.{HoodieFileIndex, SparkAdapterSupport}
+import org.apache.hudi.{DataSourceReadOptions, HoodieFileIndex, SparkAdapterSupport}
 import org.apache.hudi.HoodieBaseRelation.convertToHoodieSchema
 import org.apache.hudi.common.config.{HoodieMetadataConfig, HoodieReaderConfig}
 import org.apache.hudi.common.engine.HoodieLocalEngineContext
 import org.apache.hudi.common.model.{HoodieLogFile, HoodieTableType}
 import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.table.log.InstantRange
+import org.apache.hudi.common.table.read.IncrementalQueryAnalyzer
+import org.apache.hudi.common.table.timeline.TimelineUtils.getCommitMetadata
+import org.apache.hudi.common.table.view.HoodieTableFileSystemView
 import org.apache.hudi.common.util.collection.Pair
-import org.apache.hudi.metadata.{HoodieBackedTableMetadata, MetadataPartitionType}
+import org.apache.hudi.exception.HoodieException
+import org.apache.hudi.hadoop.utils.HoodieInputFormatUtils.listAffectedFilesForCommits
+import org.apache.hudi.metadata.{HoodieBackedTableMetadata, HoodieTableMetadataUtil, MetadataPartitionType}
 import org.apache.hudi.stats.HoodieColumnRangeMetadata
 
 import org.apache.spark.sql.HoodieCatalystExpressionUtils
@@ -71,8 +77,13 @@ class HoodieScanBuilder(spark: SparkSession,
   private val isMOR: Boolean =
     metaClient.getTableConfig.getTableType == HoodieTableType.MERGE_ON_READ
 
+  private val queryType = options.getOrElse(
+    DataSourceReadOptions.QUERY_TYPE.key, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL)
+  private val isIncrementalQuery = queryType == DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL
+  private val isReadOptimized = queryType == DataSourceReadOptions.QUERY_TYPE_READ_OPTIMIZED_OPT_VAL
+
   private lazy val fileIndex = HoodieFileIndex(spark, metaClient, None, options,
-    includeLogFiles = isMOR, shouldEmbedFileSlices = false)
+    includeLogFiles = isMOR && !isReadOptimized, shouldEmbedFileSlices = false)
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
     val (pushed, postScan) = filters.partition { f =>
@@ -108,9 +119,9 @@ class HoodieScanBuilder(spark: SparkSession,
   }
 
   override def pushAggregation(aggregation: Aggregation): Boolean = {
-    if (aggregation.groupByExpressions().nonEmpty) {
-      false
-    } else if (!MetadataPartitionType.COLUMN_STATS.isMetadataPartitionAvailable(metaClient)) {
+    if (isIncrementalQuery
+      || aggregation.groupByExpressions().nonEmpty
+      || !MetadataPartitionType.COLUMN_STATS.isMetadataPartitionAvailable(metaClient)) {
       false
     } else {
       val funcs = aggregation.aggregateExpressions()
@@ -140,12 +151,16 @@ class HoodieScanBuilder(spark: SparkSession,
   }
 
   override def build(): Scan = {
-    aggregateResult match {
-      case Some(rows) =>
-        val outputSchema = buildAggregateOutputSchema(pushedAggregation.get)
-        new HoodieLocalScan(outputSchema, rows)
-      case None =>
-        buildSnapshotScan()
+    if (isIncrementalQuery) {
+      buildIncrementalScan()
+    } else {
+      aggregateResult match {
+        case Some(rows) =>
+          val outputSchema = buildAggregateOutputSchema(pushedAggregation.get)
+          new HoodieLocalScan(outputSchema, rows)
+        case None =>
+          buildSnapshotScan()
+      }
     }
   }
 
@@ -160,10 +175,137 @@ class HoodieScanBuilder(spark: SparkSession,
     val broadcastReader = spark.sparkContext.broadcast(reader)
     val broadcastConf = spark.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
 
-    val fullPartSchema = fileIndex.partitionSchema
     val fileSlicesPerPartition = fileIndex.filterFileSlices(dataFilterExprs, partitionFilterExprs)
+    val partitions = buildPartitions(fileSlicesPerPartition, requiredPartitionSchema)
+    val morCtx = buildMorContext(requiredDataSchema)
 
-    val partitions = fileSlicesPerPartition.flatMap { case (partitionOpt, fileSlices) =>
+    new HoodieBatchScan(
+      requiredSchema,
+      partitions,
+      broadcastReader,
+      broadcastConf,
+      requiredDataSchema,
+      requiredPartitionSchema,
+      _pushedFilters,
+      pushedLimit,
+      morCtx)
+  }
+
+  private def buildIncrementalScan(): Scan = {
+    if (!options.contains(DataSourceReadOptions.START_COMMIT.key)) {
+      throw new HoodieException(s"Specify the start completion time to pull from using " +
+        s"option ${DataSourceReadOptions.START_COMMIT.key}")
+    }
+
+    if (!metaClient.getTableConfig.populateMetaFields()) {
+      throw new HoodieException("Incremental queries are not supported when meta fields are disabled")
+    }
+
+    val partFieldNames = fileIndex.partitionSchema.fieldNames.toSet
+    val requiredDataSchema = StructType(requiredSchema.filterNot(f => partFieldNames.contains(f.name)))
+    val requiredPartitionSchema = StructType(requiredSchema.filter(f => partFieldNames.contains(f.name)))
+
+    val hadoopConf = spark.sessionState.newHadoopConf()
+    val readerOptions = options + (FileFormat.OPTION_RETURNING_BATCH -> "false")
+    val reader = sparkAdapter.createParquetFileReader(false, spark.sessionState.conf, readerOptions, hadoopConf)
+    val broadcastReader = spark.sparkContext.broadcast(reader)
+    val broadcastConf = spark.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+
+    val queryContext = IncrementalQueryAnalyzer.builder()
+      .metaClient(metaClient)
+      .startCompletionTime(options(DataSourceReadOptions.START_COMMIT.key))
+      .endCompletionTime(options.getOrElse(DataSourceReadOptions.END_COMMIT.key, null))
+      .skipCompaction(options.getOrElse(DataSourceReadOptions.INCREMENTAL_READ_SKIP_COMPACT.key(),
+        String.valueOf(DataSourceReadOptions.INCREMENTAL_READ_SKIP_COMPACT.defaultValue)).toBoolean)
+      .rangeType(InstantRange.RangeType.OPEN_CLOSED)
+      .build()
+      .analyze()
+
+    if (queryContext.isEmpty) {
+      new HoodieBatchScan(
+        requiredSchema,
+        Array.empty[InputPartition],
+        broadcastReader,
+        broadcastConf,
+        requiredDataSchema,
+        requiredPartitionSchema,
+        _pushedFilters,
+        pushedLimit)
+    } else {
+      val includedCommits = queryContext.getInstants.asScala.toList
+      val includedCommitTimes = includedCommits.map(_.requestedTime).toSet
+
+      val commitsMetadata = includedCommits.map { i =>
+        if (queryContext.getArchivedInstants.contains(i)) {
+          getCommitMetadata(i, queryContext.getArchivedTimeline)
+        } else {
+          getCommitMetadata(i, queryContext.getActiveTimeline)
+        }
+      }.asJava
+
+      val latestCommit = includedCommits.last.requestedTime
+      val affectedFiles = listAffectedFilesForCommits(hadoopConf, metaClient.getBasePath, commitsMetadata)
+      val timeline = queryContext.getActiveTimeline
+      val fsView = new HoodieTableFileSystemView(metaClient, timeline, affectedFiles)
+      val modifiedPartitions = HoodieTableMetadataUtil.getWritePartitionPaths(commitsMetadata)
+
+      val fullPartSchema = fileIndex.partitionSchema
+
+      val fileSlices = modifiedPartitions.asScala.flatMap { relativePartitionPath =>
+        if (isMOR && !isReadOptimized) {
+          fsView.getLatestMergedFileSlicesBeforeOrOn(relativePartitionPath, latestCommit).iterator().asScala
+        } else {
+          fsView.getLatestFileSlicesBeforeOrOn(relativePartitionPath, latestCommit, true).iterator().asScala
+        }
+      }.toSeq
+
+      val partitions = fileSlices.filter(fs => fs.getBaseFile.isPresent || fs.hasLogFiles).map { fs =>
+        val baseFilePath = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getPath else ""
+        val baseFileLength = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getFileSize else 0L
+        val relPartPath = fs.getPartitionPath
+
+        val allPartValues = if (fullPartSchema.nonEmpty) {
+          fileIndex.parsePartitionColumnValues(fullPartSchema.fieldNames, relPartPath)
+        } else {
+          Array.empty[AnyRef]
+        }
+
+        val partValues = if (requiredPartitionSchema.isEmpty) {
+          Array.empty[AnyRef]
+        } else {
+          requiredPartitionSchema.fieldNames.map { name =>
+            val idx = fullPartSchema.fieldIndex(name)
+            allPartValues(idx)
+          }
+        }
+
+        val logFiles = fs.getLogFiles.sorted(HoodieLogFile.getLogFileComparator)
+          .iterator().asScala.toList
+
+        HoodieInputPartition(0, baseFilePath, baseFileLength, partValues, logFiles, relPartPath)
+      }.zipWithIndex.map { case (p, i) => p.copy(index = i) }.toArray[InputPartition]
+
+      val morCtx = if (isMOR && !isReadOptimized) buildMorContext(requiredDataSchema) else None
+
+      new HoodieBatchScan(
+        requiredSchema,
+        partitions,
+        broadcastReader,
+        broadcastConf,
+        requiredDataSchema,
+        requiredPartitionSchema,
+        _pushedFilters,
+        pushedLimit,
+        morCtx,
+        Some(includedCommitTimes))
+    }
+  }
+
+  private def buildPartitions(
+      fileSlicesPerPartition: Seq[(Option[org.apache.hudi.BaseHoodieTableFileIndex.PartitionPath], Seq[org.apache.hudi.common.model.FileSlice])],
+      requiredPartitionSchema: StructType): Array[InputPartition] = {
+    val fullPartSchema = fileIndex.partitionSchema
+    fileSlicesPerPartition.flatMap { case (partitionOpt, fileSlices) =>
       fileSlices.filter(fs => fs.getBaseFile.isPresent || fs.hasLogFiles).map { fs =>
         val baseFilePath = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getPath else ""
         val baseFileLength = if (fs.getBaseFile.isPresent) fs.getBaseFile.get().getFileSize else 0L
@@ -185,8 +327,10 @@ class HoodieScanBuilder(spark: SparkSession,
         HoodieInputPartition(0, baseFilePath, baseFileLength, partValues, logFiles, relPartPath)
       }
     }.zipWithIndex.map { case (p, i) => p.copy(index = i) }.toArray[InputPartition]
+  }
 
-    val morCtx = if (isMOR) {
+  private def buildMorContext(requiredDataSchema: StructType): Option[MorContext] = {
+    if (isMOR && !isReadOptimized) {
       val tableName = metaClient.getTableConfig.getTableName
       val schemaResolver = new TableSchemaResolver(metaClient)
       val tableDataSchema = schemaResolver.getTableSchema
@@ -212,17 +356,6 @@ class HoodieScanBuilder(spark: SparkSession,
     } else {
       None
     }
-
-    new HoodieBatchScan(
-      requiredSchema,
-      partitions,
-      broadcastReader,
-      broadcastConf,
-      requiredDataSchema,
-      requiredPartitionSchema,
-      _pushedFilters,
-      pushedLimit,
-      morCtx)
   }
 
   private def tryComputeAggregates(aggregation: Aggregation): Option[Array[InternalRow]] = {
