@@ -956,6 +956,12 @@ public class HoodieWriteConfig extends HoodieConfig {
       .markAdvanced()
       .withDocumentation("Application identifier (e.g. Spark application id) used to populate lock metadata so lock holders can be identified.");
 
+  public static final ConfigProperty<Boolean> DATASOURCE_V2_WRITE_ENABLED = ConfigProperty
+      .key("hoodie.datasource.v2.write.support")
+      .defaultValue(false)
+      .markAdvanced()
+      .withDocumentation("This option enables writing using datasource v2 for Spark.");
+
   /**
    * Config key with boolean value that indicates whether record being written during MERGE INTO Spark SQL
    * operation are already prepped.
@@ -2975,6 +2981,10 @@ public class HoodieWriteConfig extends HoodieConfig {
 
   public int getSecondaryIndexParallelism() {
     return metadataConfig.getSecondaryIndexParallelism();
+  }
+
+  public boolean isDatasourceV2WriteEnabled() {
+    return getBoolean(DATASOURCE_V2_WRITE_ENABLED);
   }
 
   /**

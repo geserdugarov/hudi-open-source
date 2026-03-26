@@ -44,7 +44,10 @@ import org.apache.spark.scheduler.SparkListenerStageSubmitted;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Encoders;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.api.java.UDF2;
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder;
+import org.apache.spark.sql.expressions.UserDefinedFunction;
+import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -53,6 +56,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -61,7 +65,6 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import scala.Tuple2;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -166,6 +169,34 @@ public class TestHoodieDatasetBulkInsertHelper extends HoodieSparkClientTestBase
     Dataset<Row> trimmedOutput = result.drop(HoodieRecord.PARTITION_PATH_METADATA_FIELD).drop(HoodieRecord.RECORD_KEY_METADATA_FIELD)
         .drop(HoodieRecord.FILENAME_METADATA_FIELD).drop(HoodieRecord.COMMIT_SEQNO_METADATA_FIELD).drop(HoodieRecord.COMMIT_TIME_METADATA_FIELD);
     assertTrue(dataset.except(trimmedOutput).count() == 0);
+  }
+
+  @Test
+  public void testPartitioner() {
+    List<Row> rows = DataSourceTestUtils.generateRandomRows(10);
+    HoodieWriteConfig config = getConfigBuilder(schemaStr)
+            .withProps(getPropsAllSet("_row_key"))
+            .withPopulateMetaFields(false)
+            .build();
+    Dataset<Row> dataset = sqlContext.createDataFrame(rows, structType);
+
+    final UpsertPartitioner partitioner = new UpsertPartitioner();
+    UDF2<String, String, Integer> udf2 = partitioner::getPartition;
+    UserDefinedFunction udf = org.apache.spark.sql.functions.udf(udf2, DataTypes.IntegerType);
+    sparkSession.udf().register("part", udf);
+    dataset.withColumn("part", udf.apply(dataset.col("_row_key"), dataset.col("partition"))).show();
+  }
+
+  public static class UpsertPartitioner implements Serializable {
+    public int getPartition(String key, String partitionPath) {
+      if (partitionPath.equals("2016/03/15")) {
+        return 1;
+      } else if (partitionPath.equals("2016/03/16")) {
+        return 2;
+      } else {
+        return 3;
+      }
+    }
   }
 
   @Test

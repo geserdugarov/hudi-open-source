@@ -57,7 +57,7 @@ import java.util.function.Function;
 public class HoodieRowCreateHandle implements Serializable {
 
   private static final long serialVersionUID = 1L;
-  private static final AtomicLong GLOBAL_SEQ_NO = new AtomicLong(1);
+  protected static final AtomicLong GLOBAL_SEQ_NO = new AtomicLong(1);
 
   private final HoodieTable table;
   private final HoodieWriteConfig writeConfig;
@@ -68,11 +68,11 @@ public class HoodieRowCreateHandle implements Serializable {
 
   private final boolean populateMetaFields;
 
-  private final UTF8String fileName;
-  private final UTF8String commitTime;
-  private final Function<Long, String> seqIdGenerator;
+  protected final UTF8String fileName;
+  protected final UTF8String commitTime;
+  protected final Function<Long, String> seqIdGenerator;
 
-  private final boolean shouldPreserveHoodieMetadata;
+  protected final boolean shouldPreserveHoodieMetadata;
 
   private final HoodieTimer currTimer;
 
@@ -159,13 +159,13 @@ public class HoodieRowCreateHandle implements Serializable {
    */
   public void write(InternalRow row) throws IOException {
     if (populateMetaFields) {
-      writeRow(row);
+      writeRowWithMetaFields(row);
     } else {
       writeRowNoMetaFields(row);
     }
   }
 
-  private void writeRow(InternalRow row) {
+  private void writeRowWithMetaFields(InternalRow row) {
     try {
       // NOTE: PLEASE READ THIS CAREFULLY BEFORE MODIFYING
       //       This code lays in the hot-path, and substantial caution should be
@@ -186,23 +186,27 @@ public class HoodieRowCreateHandle implements Serializable {
       metaFields[2] = recordKey;
       metaFields[4] = fileName;
       InternalRow updatedRow = SparkAdapterSupport$.MODULE$.sparkAdapter().createInternalRow(metaFields, row, true);
-      try {
-        fileWriter.writeRow(recordKey, updatedRow);
-        // NOTE: To avoid conversion on the hot-path we only convert [[UTF8String]] into [[String]]
-        //       in cases when successful records' writes are being tracked
-        HoodieRecordDelegate recordDelegate = writeStatus.isTrackingSuccessfulWrites()
-            ? HoodieRecordDelegate.create(recordKey.toString(), partitionPath.toString(), null, newRecordLocation) : null;
-        writeStatus.markSuccess(recordDelegate, Option.empty());
-      } catch (Exception t) {
-        log.error("Error writing record " + row, t);
-        if (!writeConfig.getIgnoreWriteFailed()) {
-          throw new HoodieException(t.getMessage(), t);
-        }
-        writeStatus.markFailure(recordKey.toString(), partitionPath.toString(), t);
-      }
+      writeRow(recordKey, updatedRow);
     } catch (Exception e) {
       writeStatus.setGlobalError(e);
       throw e;
+    }
+  }
+
+  protected void writeRow(UTF8String recordKey, InternalRow updatedRow) {
+    try {
+      fileWriter.writeRow(recordKey, updatedRow);
+      // NOTE: To avoid conversion on the hot-path we only convert [[UTF8String]] into [[String]]
+      //       in cases when successful records' writes are being tracked
+      HoodieRecordDelegate recordDelegate = writeStatus.isTrackingSuccessfulWrites()
+          ? HoodieRecordDelegate.create(recordKey.toString(), partitionPath.toString(), null, newRecordLocation) : null;
+      writeStatus.markSuccess(recordDelegate, Option.empty());
+    } catch (Exception t) {
+      log.error("Error writing record " + updatedRow, t);
+      if (!writeConfig.getIgnoreWriteFailed()) {
+        throw new HoodieException(t.getMessage(), t);
+      }
+      writeStatus.markFailure(recordKey.toString(), partitionPath.toString(), t);
     }
   }
 

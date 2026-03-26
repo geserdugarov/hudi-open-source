@@ -348,25 +348,48 @@ public class UpsertPartitioner<T> extends SparkHoodiePartitioner<T> {
       HoodieRecordLocation location = keyLocation._2().get();
       return updateLocationToBucket.get(location.getFileId());
     } else {
-      String partitionPath = keyLocation._1().getPartitionPath();
-      List<InsertBucketCumulativeWeightPair> targetBuckets = partitionPathToInsertBucketInfos.get(partitionPath);
-      // pick the target bucket to use based on the weights.
-      final long totalInserts = Math.max(1, profile.getWorkloadStat(partitionPath).getNumInserts());
-      final long hashOfKey = NumericUtils.getMessageDigestHash("MD5", keyLocation._1().getRecordKey());
-      final double r = 1.0 * Math.floorMod(hashOfKey, totalInserts) / totalInserts;
-
-      int index = Collections.binarySearch(targetBuckets, new InsertBucketCumulativeWeightPair(new InsertBucket(), r));
-
-      if (index >= 0) {
-        return targetBuckets.get(index).getKey().bucketNumber;
-      }
-
-      if ((-1 * index - 1) < targetBuckets.size()) {
-        return targetBuckets.get((-1 * index - 1)).getKey().bucketNumber;
-      }
-
-      // return first one, by default
-      return targetBuckets.get(0).getKey().bucketNumber;
+      return getInsertPartition(keyLocation._1().getPartitionPath(), keyLocation._1().getRecordKey());
     }
+  }
+
+  private int getInsertPartition(String partitionPath, String recordKey) {
+    List<InsertBucketCumulativeWeightPair> targetBuckets = partitionPathToInsertBucketInfos.get(partitionPath);
+    // pick the target bucket to use based on the weights.
+    final long totalInserts = Math.max(1, profile.getWorkloadStat(partitionPath).getNumInserts());
+    final long hashOfKey = NumericUtils.getMessageDigestHash("MD5", recordKey);
+    final double r = 1.0 * Math.floorMod(hashOfKey, totalInserts) / totalInserts;
+
+    int index = Collections.binarySearch(targetBuckets, new InsertBucketCumulativeWeightPair(new InsertBucket(), r));
+
+    if (index >= 0) {
+      return targetBuckets.get(index).getKey().bucketNumber;
+    }
+
+    if ((-1 * index - 1) < targetBuckets.size()) {
+      return targetBuckets.get((-1 * index - 1)).getKey().bucketNumber;
+    }
+
+    // return first one, by default
+    return targetBuckets.get(0).getKey().bucketNumber;
+  }
+
+  public int getPartition(String recordKey, String partitionPath, String fileId) {
+    if (fileId != null) {
+      Integer part = updateLocationToBucket.get(fileId);
+      if (part == null) {
+        //log
+        System.out.println("recordKey=" + recordKey + ", partitionPath=" + partitionPath + ", fileId=" + fileId);
+        System.out.println(updateLocationToBucket);
+        return part;
+      } else {
+        return part;
+      }
+    } else {
+      return getInsertPartition(partitionPath, recordKey);
+    }
+  }
+
+  public BucketInfo getBucketInfo(int partition) {
+    return bucketInfoMap.get(partition);
   }
 }

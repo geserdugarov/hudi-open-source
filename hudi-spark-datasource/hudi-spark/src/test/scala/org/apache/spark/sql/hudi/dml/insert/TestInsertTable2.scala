@@ -23,7 +23,7 @@ import org.apache.hudi.DataSourceWriteOptions.{COW_TABLE_TYPE_OPT_VAL, MOR_TABLE
 import org.apache.hudi.DataSourceWriteOptions
 import org.apache.hudi.HoodieSparkUtils
 import org.apache.hudi.client.WriteClientTestUtils
-import org.apache.hudi.common.model.WriteOperationType
+import org.apache.hudi.common.model.{WriteOperationType}
 import org.apache.hudi.common.table.HoodieTableConfig
 import org.apache.hudi.common.table.TableSchemaResolver
 import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline}
@@ -31,6 +31,7 @@ import org.apache.hudi.common.testutils.HoodieTestUtils
 import org.apache.hudi.config.HoodieWriteConfig
 import org.apache.hudi.testutils.HoodieClientTestUtils.createMetaClient
 
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase.getLastCommitMetadata
@@ -272,6 +273,67 @@ class TestInsertTable2 extends HoodieSparkSqlTestBase {
                 Seq(2, "a2", 10.0, "2021-07-18")
               )
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("Test dsv2 write to COW table") {
+    withSQLConf("hoodie.sql.insert.mode" -> "non-strict", "hoodie.bulkinsert.shuffle.parallelism" -> "1") {
+      withTempDir { tmp =>
+        Seq("cow").foreach { tableType =>
+          withTable(generateTableName) { tableName =>
+            spark.sql(
+              s"""
+                 |create table $tableName (
+                 |  id int,
+                 |  name string,
+                 |  price double,
+                 |  dt string
+                 |) using hudi
+                 | tblproperties (
+                 |  type = '$tableType',
+                 |  primaryKey = 'id'
+                 | )
+                 | partitioned by (dt)
+                 | location '${tmp.getCanonicalPath}/$tableName'
+         """.stripMargin)
+            spark.sql("set hoodie.datasource.write.insert.drop.duplicates = false")
+
+            // Enable the bulk insert
+            spark.sql("set hoodie.sql.bulk.insert.enable = true")
+            spark.sql("set spark.sql.sources.v2.bucketing.enabled = true")
+            spark.sql("set hoodie.datasource.v2.write.support = true")
+            spark.sql(s"insert into $tableName values(1, 'a1', 10, '2021-07-18')," +
+              s"(2, 'a2', 10, '2021-07-18')," +
+              s"(3, 'a3', 10, '2021-07-19')," +
+              s"(4, 'a4', 10, '2021-07-19')," +
+              s"(42, 'a42', 10, '2021-07-21')," +
+              s"(5, 'a5', 10, '2021-07-20')")
+
+            assertResult(WriteOperationType.BULK_INSERT) {
+              getLastCommitMetadata(spark, s"${tmp.getCanonicalPath}/$tableName").getOperationType
+            }
+//            spark.sql("set hoodie.sql.bulk.insert.enable = false")
+//            spark.sql("set hoodie.datasource.write.insert.drop.duplicates = true")
+
+            spark.sql(s"insert into $tableName values(1, 'a1_1', 10, '2021-07-18')," +
+              s"(2, 'a2_2', 10, '2021-07-18')," +
+              s"(3, 'a3_3', 10, '2021-07-19')," +
+              s"(6, 'a6', 10, '2021-07-19')," +
+              s"(7, 'a7', 10, '2021-07-20')")
+
+            checkAnswer(s"select id, name, price, dt from $tableName")(
+              Seq(1, "a1_1", 10.0, "2021-07-18"),
+              Seq(2, "a2_2", 10.0, "2021-07-18"),
+              Seq(3, "a3_3", 10.0, "2021-07-19"),
+              Seq(4, "a4", 10.0, "2021-07-19"),
+              Seq(5, "a5", 10.0, "2021-07-20"),
+              Seq(6, "a6", 10.0, "2021-07-19"),
+              Seq(7, "a7", 10.0, "2021-07-20"),
+              Seq(42, "a42", 10.0, "2021-07-21"),
+            )
           }
         }
       }
