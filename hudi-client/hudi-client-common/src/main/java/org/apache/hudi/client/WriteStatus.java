@@ -223,4 +223,8 @@ public class WriteStatus implements Serializable {
   public boolean isTrackingSuccessfulWrites() {
     return trackSuccessRecords;
   }
+
+  public HoodieWriteStat getStat() {
+    return stat;
+  }
 }

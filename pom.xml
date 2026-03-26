@@ -2654,7 +2654,7 @@
         <spark3.version>${spark35.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3.5</sparkbundle.version>
-        <scala12.version>2.12.18</scala12.version>
+        <scala12.version>2.12.19</scala12.version>
         <scala13.version>2.13.8</scala13.version>
         <hudi.spark.module>hudi-spark3.5.x</hudi.spark.module>
         <!-- This glob has to include hudi-spark3-common, hudi-spark3.2plus-common -->

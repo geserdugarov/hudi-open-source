@@ -505,6 +505,8 @@ object DataSourceWriteOptions {
    */
   val HIVE_STYLE_PARTITIONING = KeyGeneratorOptions.HIVE_STYLE_PARTITIONING_ENABLE
 
+  val DATASOURCE_V2_WRITE_ENABLED = HoodieWriteConfig.DATASOURCE_V2_WRITE_ENABLED
+
   /**
    * Key generator class, that implements will extract the key out of incoming record.
    */
