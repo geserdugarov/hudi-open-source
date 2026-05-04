@@ -60,6 +60,14 @@ class _OrderableValue:
     6. Values whose type has no working ``<`` at all (``object()``,
        ``range()``, user classes without ``__lt__``) are likewise rejected
        — otherwise the raw ``TypeError`` would only surface mid-sort.
+    7. User classes must override both ``__lt__`` AND ``__eq__``. A class
+       that defines only ``__lt__`` (e.g. one that always returns
+       ``False``) would otherwise pass the ``<`` probe and then silently
+       break trichotomy: with the default identity ``__eq__``, two
+       distinct instances satisfy neither ``a < b`` nor ``a == b``, so
+       ``functools.total_ordering``'s synthesised ``__gt__`` (defined as
+       ``not (a < b) and a != b``) reports both ``a > b`` and ``b > a``
+       as true and ``compare`` returns ``+1`` in both directions.
     """
 
     __slots__ = ("_key_tuple",)
@@ -84,18 +92,33 @@ class _OrderableValue:
             # total order via Python's native element-wise tuple compare.
             normalized = tuple(cls._normalize(v) for v in value)
             return (1, type(value).__qualname__, 0, normalized)
-        # Probe ``<`` against itself: raw ``object()``, ``range()``, or any
-        # user class without ``__lt__`` would otherwise pass through as an
-        # opaque payload and raise ``TypeError`` only when the sort happens
-        # to compare two such values within the same type bucket.
+        cls = type(value)
+        # Require the class to explicitly override both ``__lt__`` AND
+        # ``__eq__``. A class that defines only ``__lt__`` (returning
+        # ``False`` always, say) would otherwise pass the ``<`` probe
+        # below and then quietly produce a non-total comparator: with
+        # the default identity ``__eq__`` two distinct instances are
+        # neither ``<`` nor ``==``, and ``@total_ordering``'s
+        # synthesised ``__gt__`` then reports both directions as
+        # ``True``, so ``compare`` returns ``+1`` both ways.
+        if cls.__lt__ is object.__lt__ or cls.__eq__ is object.__eq__:
+            raise SortOrderViolation(
+                f"value of type {cls.__qualname__!r} cannot be used as "
+                "a sort-key column: its class must explicitly define both "
+                "__lt__ and __eq__ to provide a usable total order"
+            )
+        # Probe ``<`` against itself: a class that defines ``__lt__`` but
+        # whose implementation still routes back to ``object`` (returning
+        # ``NotImplemented``) would otherwise raise ``TypeError`` only
+        # when the sort happens to compare two such values.
         try:
             value < value  # noqa: B015 - probing __lt__ for total-order support
         except TypeError:
             raise SortOrderViolation(
-                f"value of type {type(value).__qualname__!r} cannot be used as "
+                f"value of type {cls.__qualname__!r} cannot be used as "
                 "a sort-key column: it has no usable total order"
             ) from None
-        return (1, type(value).__qualname__, 0, value)
+        return (1, cls.__qualname__, 0, value)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):

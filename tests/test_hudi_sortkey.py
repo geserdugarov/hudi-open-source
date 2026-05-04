@@ -255,6 +255,43 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sk.sort_tuple(r)
 
+    def test_user_class_with_only_lt_rejected(self):
+        # Regression: a class whose ``__lt__`` always returns ``False`` and
+        # which inherits the default identity-based ``__eq__`` slips past a
+        # naïve "does ``<`` raise?" probe. ``functools.total_ordering``
+        # synthesises ``__gt__`` as ``not (a < b) and a != b``, so two
+        # distinct instances satisfy *both* ``a > b`` and ``b > a`` and
+        # ``compare`` returns ``+1`` in both directions — not a total
+        # order. Reject the class up front instead.
+        class HalfOrdered:
+            def __lt__(self, other):
+                return False
+
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": HalfOrdered()}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": HalfOrdered()}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(a)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(a, b)
+
+    def test_user_class_with_lt_but_default_eq_rejected(self):
+        # Even a "reasonable" ``__lt__`` is unsafe when paired with the
+        # default identity ``__eq__``: two equal-by-content instances tie
+        # under ``<`` but compare unequal under ``==``, so the synthesised
+        # ``__gt__`` again misfires. Require both to be overridden.
+        class OnlyLt:
+            def __init__(self, n):
+                self.n = n
+
+            def __lt__(self, other):
+                return self.n < other.n
+
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": OnlyLt(1)}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
     def test_user_class_with_lt_is_accepted(self):
         # Sanity check: a value that does implement ``__lt__`` still works.
         from functools import total_ordering
