@@ -14,7 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import unittest
+from types import MappingProxyType
 
 from hudi.fileformat import FileHeader, FileKind, HEADER_SIZE
 from hudi.errors import CorruptFileError
@@ -125,6 +127,36 @@ class RecordImmutabilityTests(unittest.TestCase):
         self.assertEqual(r.primary_key, ((1, 2),))
         inner.append(99)
         self.assertEqual(r.primary_key, ((1, 2),))
+
+    def test_nested_mappingproxy_in_payload_is_snapshotted(self):
+        # Regression: a ``MappingProxyType`` is only a read-only *view*
+        # of a still-mutable backing dict. If we accept it as-is, a caller
+        # that retains the backing dict can mutate the record's payload
+        # after construction and silently change its equality / sort-key
+        # behavior.
+        backing = {"a": 1}
+        proxy = MappingProxyType(backing)
+        r = Record(primary_key=("k",), payload={"x": proxy})
+        # Mutating the original dict (which the proxy still views) must
+        # not affect the record.
+        backing["a"] = 999
+        backing["b"] = "new"
+        self.assertEqual(dict(r.payload["x"]), {"a": 1})
+        # And the snapshot stored on the record is itself read-only.
+        with self.assertRaises(TypeError):
+            r.payload["x"]["a"] = 2  # type: ignore[index]
+
+    def test_nested_user_dict_in_payload_is_snapshotted(self):
+        # Regression: ``collections.UserDict`` is a Mapping but not a
+        # ``dict``, so a type-narrow ``isinstance(..., dict)`` check
+        # would have left it stored as the original mutable object.
+        ud = collections.UserDict({"a": 1})
+        r = Record(primary_key=("k",), payload={"x": ud})
+        ud["a"] = 999
+        ud["b"] = "new"
+        self.assertEqual(dict(r.payload["x"]), {"a": 1})
+        with self.assertRaises(TypeError):
+            r.payload["x"]["a"] = 2  # type: ignore[index]
 
 
 class RecordSupersedesTests(unittest.TestCase):

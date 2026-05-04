@@ -15,6 +15,7 @@
 # limitations under the License.
 """The atomic ``Record`` value used everywhere in the prototype."""
 
+from collections.abc import Mapping as _MappingABC
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Tuple
@@ -28,9 +29,10 @@ def _freeze(value: Any) -> Any:
     ``dict``, ``set``, or ``bytearray`` — which would silently change the
     record's equality and sort-key behavior.
     """
-    if isinstance(value, MappingProxyType):
-        return value
-    if isinstance(value, dict):
+    # Any Mapping (plain ``dict``, ``MappingProxyType``, ``UserDict``, ...)
+    # is snapshot-copied: a ``MappingProxyType`` is only a read-only *view*
+    # of a still-mutable backing dict, so we must not trust it as-is.
+    if isinstance(value, _MappingABC):
         return MappingProxyType({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(v) for v in value)
