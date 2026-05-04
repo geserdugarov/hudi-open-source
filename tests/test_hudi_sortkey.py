@@ -224,6 +224,59 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sk.sort_tuple(r)
 
+    def test_bare_object_value_rejected(self):
+        # ``object()`` instances have no ``__lt__`` — comparing two of them
+        # raises a raw ``TypeError`` mid-sort, so reject up front instead.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": object()}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_range_value_rejected(self):
+        # ``range`` defines no ordering; same failure mode as ``object()``.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": range(3)}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_user_class_without_lt_rejected(self):
+        class Opaque:
+            pass
+
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": Opaque()}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_unorderable_value_nested_under_list_is_rejected(self):
+        # Same defence applies inside list/tuple payloads.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": [1, object()]}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_user_class_with_lt_is_accepted(self):
+        # Sanity check: a value that does implement ``__lt__`` still works.
+        from functools import total_ordering
+
+        @total_ordering
+        class Boxed:
+            def __init__(self, n):
+                self.n = n
+            def __eq__(self, other):
+                return isinstance(other, Boxed) and self.n == other.n
+            def __lt__(self, other):
+                return isinstance(other, Boxed) and self.n < other.n
+            def __hash__(self):
+                return hash(self.n)
+
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": Boxed(1)}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": Boxed(2)}, sequence=0)
+        self.assertEqual(sk.compare(a, b), -1)
+        self.assertEqual(sk.compare(b, a), 1)
+        self.assertEqual(sk.compare(a, a), 0)
+
 
 class SortKeyFingerprintTests(unittest.TestCase):
     def test_fingerprint_is_fixed_size(self):

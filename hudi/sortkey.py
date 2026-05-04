@@ -57,6 +57,9 @@ class _OrderableValue:
        (``complex``, ``dict``, ``set``, ``frozenset``) are rejected with
        :class:`SortOrderViolation`, even when they appear nested inside a
        list or tuple.
+    6. Values whose type has no working ``<`` at all (``object()``,
+       ``range()``, user classes without ``__lt__``) are likewise rejected
+       — otherwise the raw ``TypeError`` would only surface mid-sort.
     """
 
     __slots__ = ("_key_tuple",)
@@ -81,6 +84,17 @@ class _OrderableValue:
             # total order via Python's native element-wise tuple compare.
             normalized = tuple(cls._normalize(v) for v in value)
             return (1, type(value).__qualname__, 0, normalized)
+        # Probe ``<`` against itself: raw ``object()``, ``range()``, or any
+        # user class without ``__lt__`` would otherwise pass through as an
+        # opaque payload and raise ``TypeError`` only when the sort happens
+        # to compare two such values within the same type bucket.
+        try:
+            value < value  # noqa: B015 - probing __lt__ for total-order support
+        except TypeError:
+            raise SortOrderViolation(
+                f"value of type {type(value).__qualname__!r} cannot be used as "
+                "a sort-key column: it has no usable total order"
+            ) from None
         return (1, type(value).__qualname__, 0, value)
 
     def __eq__(self, other: object) -> bool:
