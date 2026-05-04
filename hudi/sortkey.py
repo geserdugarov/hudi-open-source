@@ -77,14 +77,19 @@ class _OrderableValue:
        ``functools.total_ordering``'s synthesised ``__gt__`` (defined as
        ``not (a < b) and a != b``) reports both ``a > b`` and ``b > a``
        as true and ``compare`` returns ``+1`` in both directions.
-    9. As a final safety net, ``__lt__`` catches any ``TypeError`` raised
-       by the underlying tuple comparison and re-raises it as
-       :class:`SortOrderViolation`. Some types pass each per-value
-       ``value < value`` probe individually but raise when compared
-       across instances — naive vs. timezone-aware ``datetime.datetime``
-       is the canonical case (``TypeError: can't compare offset-naive
-       and offset-aware datetimes``). Callers get the documented
-       ordering-violation error instead of a raw ``TypeError`` mid-sort.
+    9. As a final safety net, both the per-value probe and ``__lt__``
+       catch *any* exception raised by the underlying ``<`` (not just
+       ``TypeError``) and re-raise it as :class:`SortOrderViolation`.
+       Some types pass the per-value ``value < value`` probe but raise
+       when compared across instances — naive vs. timezone-aware
+       ``datetime.datetime`` is the canonical case
+       (``TypeError: can't compare offset-naive and offset-aware
+       datetimes``). Other types raise non-``TypeError`` exceptions
+       even on self-comparison: ``decimal.Decimal('NaN') <
+       decimal.Decimal('NaN')`` raises ``decimal.InvalidOperation``,
+       which is *not* a ``TypeError``. Catching ``Exception`` keeps the
+       failure inside the documented :class:`SortOrderViolation`
+       contract instead of letting an arbitrary error escape mid-sort.
     """
 
     __slots__ = ("_key_tuple",)
@@ -127,10 +132,16 @@ class _OrderableValue:
         # Probe ``<`` against itself: a class that defines ``__lt__`` but
         # whose implementation still routes back to ``object`` (returning
         # ``NotImplemented``) would otherwise raise ``TypeError`` only
-        # when the sort happens to compare two such values.
+        # when the sort happens to compare two such values. We catch
+        # ``Exception`` rather than just ``TypeError`` because some types
+        # signal "no usable order" with a different exception class —
+        # e.g. ``Decimal('NaN') < Decimal('NaN')`` raises
+        # ``decimal.InvalidOperation``, which is an ``ArithmeticError``,
+        # not a ``TypeError``. Anything other than a clean ``True`` /
+        # ``False`` here means the value can't sit in a total order.
         try:
             value < value  # noqa: B015 - probing __lt__ for total-order support
-        except TypeError:
+        except Exception:
             raise SortOrderViolation(
                 f"value of type {val_cls.__qualname__!r} cannot be used as "
                 "a sort-key column: it has no usable total order"
@@ -150,12 +161,16 @@ class _OrderableValue:
             return NotImplemented
         try:
             return self._key_tuple < other._key_tuple
-        except TypeError as exc:
+        except Exception as exc:
             # Two values whose types each pass the per-value ``<`` probe
             # can still raise when compared to each other: naive vs.
             # timezone-aware ``datetime.datetime`` is the canonical
-            # offender. Surface this as the documented ordering-violation
-            # error rather than letting a raw ``TypeError`` escape mid-sort.
+            # offender (``TypeError``). Other types signal an
+            # un-orderable comparison with a non-``TypeError`` exception
+            # — ``decimal.InvalidOperation`` from ``Decimal('NaN')`` is
+            # the case that prompted broadening this catch. Surface any
+            # such failure as the documented ordering-violation error
+            # rather than letting it escape mid-sort.
             raise SortOrderViolation(
                 "values cannot be ordered against each other: "
                 f"{exc}"

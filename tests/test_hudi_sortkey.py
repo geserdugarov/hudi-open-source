@@ -361,6 +361,34 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         self.assertNotEqual(ab, 0)
         self.assertEqual(ab, -ba)
 
+    def test_decimal_nan_value_rejected(self):
+        # Regression: ``_normalize`` previously caught only ``TypeError``
+        # from the ``value < value`` probe, but ``Decimal('NaN')`` raises
+        # ``decimal.InvalidOperation`` (an ``ArithmeticError``, not a
+        # ``TypeError``). The probe leaked that out of ``sort_tuple``
+        # instead of converting it to the documented ordering-violation
+        # error, so callers got an exception outside the
+        # :class:`HudiError` hierarchy.
+        from decimal import Decimal
+
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": Decimal("NaN")}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(r, r)
+
+    def test_decimal_signaling_nan_value_rejected(self):
+        # ``Decimal('sNaN')`` raises ``InvalidOperation`` even more
+        # eagerly than quiet NaN. Make sure the same broadened catch
+        # converts it into the documented ordering-violation error.
+        from decimal import Decimal
+
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": Decimal("sNaN")}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
     def test_user_class_with_lt_is_accepted(self):
         # Sanity check: a value that does implement ``__lt__`` still works.
         from functools import total_ordering

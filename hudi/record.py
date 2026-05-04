@@ -20,6 +20,27 @@ from types import MappingProxyType
 from typing import Any, Mapping, Tuple
 
 
+def _freeze(value: Any) -> Any:
+    """Recursively replace mutable containers with immutable equivalents.
+
+    Without this, a record's ``primary_key`` or ``payload`` could still be
+    mutated after construction by reaching through a nested ``list``,
+    ``dict``, ``set``, or ``bytearray`` — which would silently change the
+    record's equality and sort-key behavior.
+    """
+    if isinstance(value, MappingProxyType):
+        return value
+    if isinstance(value, dict):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(v) for v in value)
+    if isinstance(value, bytearray):
+        return bytes(value)
+    return value
+
+
 @dataclass(frozen=True)
 class Record:
     """An immutable row.
@@ -29,6 +50,13 @@ class Record:
     read-only view so the frozen contract is not just nominal).
     ``sequence`` is a monotonically increasing version stamp; on duplicate
     keys, the highest ``sequence`` wins.
+
+    Both ``primary_key`` and ``payload`` are *deeply* frozen on
+    construction: nested lists become tuples, nested dicts become
+    read-only mapping proxies, sets become frozensets, etc. Without
+    this, a caller holding a reference to an inner container could
+    mutate the record's state after construction and silently change
+    its equality / sort-key behavior.
     """
 
     primary_key: Tuple[Any, ...]
@@ -36,10 +64,14 @@ class Record:
     sequence: int = 0
 
     def __post_init__(self) -> None:
-        # Normalise the key to a tuple and freeze the payload so callers
-        # can't mutate a Record's state after construction.
-        object.__setattr__(self, "primary_key", tuple(self.primary_key))
-        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(
+            self, "primary_key", tuple(_freeze(v) for v in self.primary_key)
+        )
+        object.__setattr__(
+            self,
+            "payload",
+            MappingProxyType({k: _freeze(v) for k, v in dict(self.payload).items()}),
+        )
 
     def supersedes(self, other: "Record") -> bool:
         """True if ``self`` is a newer version of the same key than ``other``."""

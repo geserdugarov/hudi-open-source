@@ -60,6 +60,72 @@ class RecordImmutabilityTests(unittest.TestCase):
         src["x"] = 999
         self.assertEqual(r.payload["x"], 1)
 
+    def test_nested_list_in_payload_is_frozen(self):
+        # Regression: shallow freezing left mutable values reachable
+        # through the read-only payload view, so a caller could still
+        # mutate the record's state via the inner list and silently
+        # change its equality / sort behavior.
+        src = [1, 2, 3]
+        r = Record(primary_key=("k",), payload={"x": src})
+        # The list is converted to a tuple on the way in.
+        self.assertEqual(r.payload["x"], (1, 2, 3))
+        # The original list staying mutable must not affect the record.
+        src.append(99)
+        self.assertEqual(r.payload["x"], (1, 2, 3))
+        # The stored value itself is no longer mutable.
+        with self.assertRaises(AttributeError):
+            r.payload["x"].append(99)  # type: ignore[attr-defined]
+
+    def test_nested_dict_in_payload_is_frozen(self):
+        inner = {"a": 1}
+        r = Record(primary_key=("k",), payload={"x": inner})
+        # External mutation must not leak in.
+        inner["a"] = 999
+        self.assertEqual(r.payload["x"]["a"], 1)
+        # And the stored nested mapping is itself read-only.
+        with self.assertRaises(TypeError):
+            r.payload["x"]["a"] = 2  # type: ignore[index]
+
+    def test_nested_set_in_payload_is_frozen(self):
+        src = {1, 2, 3}
+        r = Record(primary_key=("k",), payload={"x": src})
+        self.assertEqual(r.payload["x"], frozenset({1, 2, 3}))
+        # frozenset has no ``add`` method.
+        with self.assertRaises(AttributeError):
+            r.payload["x"].add(99)  # type: ignore[attr-defined]
+
+    def test_nested_bytearray_in_payload_is_frozen(self):
+        src = bytearray(b"abc")
+        r = Record(primary_key=("k",), payload={"x": src})
+        # Stored as bytes; mutating the source must not affect the record.
+        src[0] = ord("Z")
+        self.assertEqual(r.payload["x"], b"abc")
+
+    def test_deeply_nested_mutation_does_not_leak_in(self):
+        # Inner dict-inside-list-inside-dict is also frozen all the way down.
+        inner = {"k": [1, 2]}
+        r = Record(primary_key=("k",), payload={"x": [inner]})
+        inner["k"].append(99)
+        # Snapshot is unaffected by the post-construction mutation, and
+        # every level along the way is the immutable equivalent of the
+        # original container.
+        outer = r.payload["x"]
+        self.assertIsInstance(outer, tuple)
+        self.assertEqual(len(outer), 1)
+        nested = outer[0]
+        self.assertEqual(dict(nested), {"k": (1, 2)})
+        with self.assertRaises(TypeError):
+            nested["k"] = "mutated"  # type: ignore[index]
+
+    def test_primary_key_inner_list_is_frozen(self):
+        # Mutable values inside the primary key would otherwise change
+        # the record's identity after construction.
+        inner = [1, 2]
+        r = Record(primary_key=(inner,), payload={})
+        self.assertEqual(r.primary_key, ((1, 2),))
+        inner.append(99)
+        self.assertEqual(r.primary_key, ((1, 2),))
+
 
 class RecordSupersedesTests(unittest.TestCase):
     def test_higher_sequence_supersedes_same_key(self):
