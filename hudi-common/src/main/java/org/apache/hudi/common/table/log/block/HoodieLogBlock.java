@@ -148,6 +148,15 @@ public abstract class HoodieLogBlock {
   }
 
   /**
+   * @return {@code true} if the {@link HeaderMetadataType#IS_ORDERED} header is present and
+   * its value parses to {@code true}; {@code false} otherwise (including when the header is absent).
+   */
+  public boolean isOrdered() {
+    String value = logBlockHeader.get(HeaderMetadataType.IS_ORDERED);
+    return value != null && Boolean.parseBoolean(value);
+  }
+
+  /**
    * @return base file instant time of the record positions if the record positions are enabled
    * in the log block; {@code null} otherwise.
    */
@@ -231,7 +240,8 @@ public abstract class HoodieLogBlock {
     RECORD_POSITIONS(HoodieTableVersion.SIX),
     BLOCK_IDENTIFIER(HoodieTableVersion.SIX),
     IS_PARTIAL(HoodieTableVersion.EIGHT),
-    BASE_FILE_INSTANT_TIME_OF_RECORD_POSITIONS(HoodieTableVersion.EIGHT);
+    BASE_FILE_INSTANT_TIME_OF_RECORD_POSITIONS(HoodieTableVersion.EIGHT),
+    IS_ORDERED(HoodieTableVersion.NINE);
 
     @SuppressWarnings("unused")
     private final HoodieTableVersion earliestTableVersion;
