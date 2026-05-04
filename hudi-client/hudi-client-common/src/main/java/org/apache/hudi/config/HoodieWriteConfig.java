@@ -1965,6 +1965,14 @@ public class HoodieWriteConfig extends HoodieConfig {
     return getBoolean(HoodieReaderConfig.COMPACTION_REVERSE_LOG_READ_ENABLE);
   }
 
+  public boolean isCompactionWithMergeSortEnabled() {
+    return getBoolean(HoodieCompactionConfig.COMPACTION_WITH_MERGE_SORT_ENABLE);
+  }
+
+  public long getCompactionLogStreamingReadBuffer() {
+    return getLong(HoodieCompactionConfig.COMPACTION_LOG_STREAMING_READ_BUFFER);
+  }
+
   public int getArchiveDeleteParallelism() {
     return getInt(HoodieArchivalConfig.DELETE_ARCHIVED_INSTANT_PARALLELISM_VALUE);
   }

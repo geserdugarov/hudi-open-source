@@ -204,6 +204,24 @@ public class HoodieCompactionConfig extends HoodieConfig {
       .withDocumentation("Compaction plan generator for data files. Override with a custom plan generator "
           + "if there's a need to use extraMetadata in the compaction plan for optimizations, ignore otherwise");
 
+  public static final ConfigProperty<Boolean> COMPACTION_WITH_MERGE_SORT_ENABLE = ConfigProperty
+      .key("hoodie.compaction.with.merge.sort.enable")
+      .defaultValue(false)
+      .markAdvanced()
+      .withDocumentation("When set to true, compaction merges ordered log blocks (those tagged with the "
+          + "IS_ORDERED log block header) using a streaming merge-sort across log files instead of loading "
+          + "records into a spillable map. Has no effect today and will be honored by the compaction "
+          + "executor in a follow-up change (RFC-81).");
+
+  public static final ConfigProperty<Long> COMPACTION_LOG_STREAMING_READ_BUFFER = ConfigProperty
+      .key("hoodie.compaction.log.streaming.read.buffer")
+      .defaultValue(10L * 1024 * 1024)
+      .markAdvanced()
+      .withDocumentation("Per-log-file read buffer size, in bytes, used by the streaming merge-sort path "
+          + "during compaction (see " + COMPACTION_WITH_MERGE_SORT_ENABLE.key() + "). Defaults to 10MB. "
+          + "Has no effect today and will be honored by the compaction executor in a follow-up change "
+          + "(RFC-81).");
+
   /** @deprecated Use {@link #INLINE_COMPACT} and its methods instead */
   @Deprecated
   public static final String INLINE_COMPACT_PROP = INLINE_COMPACT.key();

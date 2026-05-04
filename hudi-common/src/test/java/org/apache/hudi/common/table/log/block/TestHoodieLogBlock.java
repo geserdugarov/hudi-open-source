@@ -104,6 +104,38 @@ public class TestHoodieLogBlock {
     Assertions.assertEquals("true", b.get(HoodieLogBlock.HeaderMetadataType.IS_PARTIAL));
   }
 
+  @Test
+  public void testIsOrderedHeaderRoundTrip() throws IOException {
+    Map<HoodieLogBlock.HeaderMetadataType, String> header = new HashMap<>();
+    header.put(HoodieLogBlock.HeaderMetadataType.INSTANT_TIME, "100");
+    header.put(HoodieLogBlock.HeaderMetadataType.IS_ORDERED, "true");
+
+    byte[] bytes = HoodieLogBlock.getHeaderMetadataBytes(header);
+    Map<HoodieLogBlock.HeaderMetadataType, String> decoded = HoodieLogBlock.getHeaderMetadata(
+        new ByteArraySeekableDataInputStream(new ByteBufferBackedInputStream(bytes)));
+
+    Assertions.assertEquals("true", decoded.get(HoodieLogBlock.HeaderMetadataType.IS_ORDERED));
+    Assertions.assertEquals("100", decoded.get(HoodieLogBlock.HeaderMetadataType.INSTANT_TIME));
+
+    // isOrdered() helper should reflect the encoded flag after round-trip.
+    assertTrue(newBlockWithHeader(decoded).isOrdered());
+    // When the header is absent, isOrdered() must return false.
+    assertFalse(newBlockWithHeader(new HashMap<>()).isOrdered());
+    // Explicit "false" value also resolves to false.
+    Map<HoodieLogBlock.HeaderMetadataType, String> falseHeader = new HashMap<>();
+    falseHeader.put(HoodieLogBlock.HeaderMetadataType.IS_ORDERED, "false");
+    assertFalse(newBlockWithHeader(falseHeader).isOrdered());
+  }
+
+  private static HoodieLogBlock newBlockWithHeader(Map<HoodieLogBlock.HeaderMetadataType, String> header) {
+    return new HoodieLogBlock(header, Collections.emptyMap(), Option.empty(), Option.empty(), null, false) {
+      @Override
+      public HoodieLogBlockType getBlockType() {
+        return HoodieLogBlockType.AVRO_DATA_BLOCK;
+      }
+    };
+  }
+
   private SeekableDataInputStream prepareMockedLogInputStream(int contentSize,
                                                               int numReadFailTimes) throws IOException {
     IOException exception = new IOException("Read content from log file fails");
