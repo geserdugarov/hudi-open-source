@@ -389,6 +389,54 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sk.sort_tuple(r)
 
+    def test_user_class_with_broken_lt_falls_back_to_total_order(self):
+        # Regression: a class can override BOTH ``__lt__`` and ``__eq__``
+        # (passing the strict signature check and the per-value ``<``
+        # probe) and still ship a semantically broken ``__lt__`` — the
+        # canonical case is ``__lt__`` always returning ``False`` paired
+        # with an identity-based ``__eq__``. Two distinct instances then
+        # satisfy neither ``a < b`` nor ``b < a`` nor ``a == b``, and a
+        # naive comparator returns ``+1`` in both directions, violating
+        # the issue's total-order contract. ``_FallbackOrdered`` wraps
+        # the value with an ``id()``-based tiebreaker that fires only
+        # when the user's own ``<`` and ``==`` both fail to decide, so
+        # the comparator stays antisymmetric and trichotomous.
+        class BrokenLt:
+            def __lt__(self, other):
+                return False
+
+            def __eq__(self, other):
+                return self is other
+
+            def __hash__(self):
+                return id(self)
+
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": BrokenLt()}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": BrokenLt()}, sequence=0)
+        ab = sk.compare(a, b)
+        ba = sk.compare(b, a)
+        # Antisymmetry: the two directions must be exact opposites, and
+        # distinct instances must never silently tie under a broken ``<``.
+        self.assertNotEqual(ab, 0)
+        self.assertEqual(ab, -ba)
+        # Self-compare still returns 0 — the user's identity ``__eq__``
+        # decides before the fallback fires.
+        self.assertEqual(sk.compare(a, a), 0)
+        # ``sorted`` must produce a stable, total order over a population
+        # of such broken-but-overridden values.
+        records = [
+            Record(primary_key=(i,), payload={"v": BrokenLt()}, sequence=0)
+            for i in range(5)
+        ]
+        ordered = sorted(records, key=sk.sort_tuple)
+        self.assertEqual(len(ordered), 5)
+        # Two passes over the same input must yield the same order.
+        self.assertEqual(
+            [id(r) for r in ordered],
+            [id(r) for r in sorted(records, key=sk.sort_tuple)],
+        )
+
     def test_user_class_with_lt_is_accepted(self):
         # Sanity check: a value that does implement ``__lt__`` still works.
         from functools import total_ordering

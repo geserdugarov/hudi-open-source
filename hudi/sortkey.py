@@ -33,6 +33,63 @@ FINGERPRINT_BYTES = 16
 _UNORDERABLE_TYPES: Tuple[type, ...] = (complex, dict, set, frozenset)
 
 
+class _FallbackOrdered:
+    """Guarantees a total order over a single value, even if the value's
+    own ``<`` is semantically broken.
+
+    Uses the user's ``==`` and ``<`` when they decide the comparison
+    (matching legitimate user semantics: two content-equal instances
+    sort as equal, ordered instances sort by the user's order). When
+    neither direction nor equality decides — the failure mode of a
+    class whose ``__lt__`` always returns ``False``, for example —
+    falls back to ``id()`` so the comparator is still antisymmetric
+    and trichotomous. Without this fallback, two distinct instances of
+    such a class would satisfy neither ``a < b`` nor ``b < a`` nor
+    ``a == b``, and :meth:`SortKey.compare` would return ``+1`` in
+    both directions.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def _raise(self, exc: BaseException) -> "SortOrderViolation":
+        return SortOrderViolation(
+            f"values cannot be ordered against each other: {exc}"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _FallbackOrdered):
+            return NotImplemented
+        try:
+            return bool(self._value == other._value)
+        except Exception as exc:
+            raise self._raise(exc) from exc
+
+    def __lt__(self, other: "_FallbackOrdered") -> bool:
+        if not isinstance(other, _FallbackOrdered):
+            return NotImplemented
+        try:
+            if bool(self._value == other._value):
+                return False
+        except Exception as exc:
+            raise self._raise(exc) from exc
+        try:
+            if bool(self._value < other._value):
+                return True
+        except Exception as exc:
+            raise self._raise(exc) from exc
+        try:
+            if bool(other._value < self._value):
+                return False
+        except Exception as exc:
+            raise self._raise(exc) from exc
+        # The user's ``<`` did not decide between two distinct values.
+        # Fall back to ``id()`` so the comparator stays a total order.
+        return id(self._value) < id(other._value)
+
+
 @total_ordering
 class _OrderableValue:
     """Wraps a column value so the result of comparisons is a true total order.
@@ -77,19 +134,30 @@ class _OrderableValue:
        ``functools.total_ordering``'s synthesised ``__gt__`` (defined as
        ``not (a < b) and a != b``) reports both ``a > b`` and ``b > a``
        as true and ``compare`` returns ``+1`` in both directions.
-    9. As a final safety net, both the per-value probe and ``__lt__``
-       catch *any* exception raised by the underlying ``<`` (not just
-       ``TypeError``) and re-raise it as :class:`SortOrderViolation`.
-       Some types pass the per-value ``value < value`` probe but raise
-       when compared across instances — naive vs. timezone-aware
-       ``datetime.datetime`` is the canonical case
-       (``TypeError: can't compare offset-naive and offset-aware
-       datetimes``). Other types raise non-``TypeError`` exceptions
-       even on self-comparison: ``decimal.Decimal('NaN') <
-       decimal.Decimal('NaN')`` raises ``decimal.InvalidOperation``,
-       which is *not* a ``TypeError``. Catching ``Exception`` keeps the
-       failure inside the documented :class:`SortOrderViolation`
-       contract instead of letting an arbitrary error escape mid-sort.
+    9. Even when *both* ``__lt__`` and ``__eq__`` are overridden, a user
+       class can still ship a semantically-broken ``__lt__`` (one that
+       always returns ``False`` is the canonical case). Such a class
+       passes both the strict signature check above and the per-value
+       ``value < value`` probe, yet for two distinct instances neither
+       direction nor equality decides — so ``compare`` once again
+       returns ``+1`` in both directions. Wrapping the value in
+       :class:`_FallbackOrdered` adds a deterministic ``id()``-based
+       tiebreaker that fires *only* when the user's ``<`` and ``==``
+       both fail to decide, so the comparator stays a true total order
+       without altering legitimate user semantics.
+    10. As a final safety net, both the per-value probe and ``__lt__``
+        catch *any* exception raised by the underlying ``<`` (not just
+        ``TypeError``) and re-raise it as :class:`SortOrderViolation`.
+        Some types pass the per-value ``value < value`` probe but raise
+        when compared across instances — naive vs. timezone-aware
+        ``datetime.datetime`` is the canonical case
+        (``TypeError: can't compare offset-naive and offset-aware
+        datetimes``). Other types raise non-``TypeError`` exceptions
+        even on self-comparison: ``decimal.Decimal('NaN') <
+        decimal.Decimal('NaN')`` raises ``decimal.InvalidOperation``,
+        which is *not* a ``TypeError``. Catching ``Exception`` keeps the
+        failure inside the documented :class:`SortOrderViolation`
+        contract instead of letting an arbitrary error escape mid-sort.
     """
 
     __slots__ = ("_key_tuple",)
@@ -149,7 +217,11 @@ class _OrderableValue:
         # ``id(val_cls)`` disambiguates distinct classes that happen to
         # share ``__qualname__`` (factory-produced classes, redefined
         # classes, etc.) so their values never reach a cross-class ``<``.
-        return (1, val_cls.__qualname__, 0, id(val_cls), value)
+        # ``_FallbackOrdered`` adds a deterministic tiebreaker for when
+        # the user's ``<`` is structurally complete but semantically
+        # broken (e.g. always returns ``False``); see point 9 in the
+        # class docstring.
+        return (1, val_cls.__qualname__, 0, id(val_cls), _FallbackOrdered(value))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):
