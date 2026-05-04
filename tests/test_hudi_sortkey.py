@@ -292,6 +292,75 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sk.sort_tuple(r)
 
+    def test_naive_and_aware_datetime_compare_raises_sort_order_violation(self):
+        # Regression: ``_normalize`` only probed ``value < value``, which
+        # both a naive and a timezone-aware ``datetime`` pass individually,
+        # so each call to ``sort_tuple`` succeeded. But pairwise the two
+        # raise ``TypeError: can't compare offset-naive and offset-aware
+        # datetimes`` in CPython, which leaked out of ``compare()`` /
+        # ``sorted(..., key=sort_tuple)`` instead of becoming the
+        # documented ordering-violation error.
+        import datetime
+
+        sk = SortKey(columns=("ts",))
+        naive = datetime.datetime(2024, 1, 1)
+        aware = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        a = Record(primary_key=(0,), payload={"ts": naive}, sequence=0)
+        b = Record(primary_key=(1,), payload={"ts": aware}, sequence=0)
+        # Each value individually still normalises (self-compare succeeds).
+        sk.sort_tuple(a)
+        sk.sort_tuple(b)
+        # But the cross-instance comparison must surface as the documented
+        # ordering-violation error in both directions and through ``sorted``.
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(a, b)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(b, a)
+        with self.assertRaises(SortOrderViolation):
+            sorted([a, b], key=sk.sort_tuple)
+
+    def test_distinct_classes_with_same_qualname_dont_collide(self):
+        # Regression: bucketing by ``__qualname__`` alone let two distinct
+        # classes that share a qualname (factory-produced classes both
+        # named ``make_class.<locals>.C``) fall through to a raw
+        # cross-class ``<``. With each class's ``__lt__`` returning
+        # ``False`` for "other" instances, both ``compare(a, b)`` and
+        # ``compare(b, a)`` came back as ``+1`` — not a total order.
+        from functools import total_ordering
+
+        def make_class():
+            @total_ordering
+            class C:
+                def __init__(self, n):
+                    self.n = n
+
+                def __eq__(self, other):
+                    return isinstance(other, type(self)) and self.n == other.n
+
+                def __lt__(self, other):
+                    return isinstance(other, type(self)) and self.n < other.n
+
+                def __hash__(self):
+                    return hash(self.n)
+
+            return C
+
+        A = make_class()
+        B = make_class()
+        # Sanity: distinct classes that share __qualname__.
+        self.assertEqual(A.__qualname__, B.__qualname__)
+        self.assertIsNot(A, B)
+
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": A(1)}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": B(1)}, sequence=0)
+        ab = sk.compare(a, b)
+        ba = sk.compare(b, a)
+        # Strict antisymmetry and trichotomy: distinct classes are never
+        # equal under this wrapper, and the two directions must be opposite.
+        self.assertNotEqual(ab, 0)
+        self.assertEqual(ab, -ba)
+
     def test_user_class_with_lt_is_accepted(self):
         # Sanity check: a value that does implement ``__lt__`` still works.
         from functools import total_ordering

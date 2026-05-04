@@ -37,9 +37,10 @@ _UNORDERABLE_TYPES: Tuple[type, ...] = (complex, dict, set, frozenset)
 class _OrderableValue:
     """Wraps a column value so the result of comparisons is a true total order.
 
-    Each value is normalised to a ``(bucket, type_name, nan_tag, payload)``
-    4-tuple. Comparing two such tuples with Python's native ``<`` then yields
-    a true total order because:
+    Each value is normalised to a
+    ``(bucket, type_name, nan_tag, type_id, payload)`` 5-tuple. Comparing
+    two such tuples with Python's native ``<`` then yields a true total
+    order because:
 
     1. ``None`` always sorts first (bucket 0).
     2. Within bucket 1 we group by the value's type qualname so heterogeneous
@@ -50,17 +51,25 @@ class _OrderableValue:
        Python's native ``float('nan') < x`` and ``x < float('nan')`` are
        both False, which would otherwise let ``compare(a, b)`` and
        ``compare(b, a)`` both return +1.
-    4. ``list`` / ``tuple`` payloads are recursively normalised so a nested
+    4. The class identity (``id(type(value))``) is included as a further
+       tiebreaker so two distinct user classes that happen to share the
+       same ``__qualname__`` (e.g. classes built by a factory function,
+       both ending up as ``make_class.<locals>.C``) bucket separately
+       instead of falling through to a raw cross-class ``<``. Without
+       this, two such classes can pass each per-value probe and then
+       silently violate trichotomy at compare time, with both
+       ``compare(a, b)`` and ``compare(b, a)`` returning ``+1``.
+    5. ``list`` / ``tuple`` payloads are recursively normalised so a nested
        NaN or heterogeneous element can't smuggle a partial order back in
        at the inner-comparison step.
-    5. Other values whose native ``<`` is not a true total order
+    6. Other values whose native ``<`` is not a true total order
        (``complex``, ``dict``, ``set``, ``frozenset``) are rejected with
        :class:`SortOrderViolation`, even when they appear nested inside a
        list or tuple.
-    6. Values whose type has no working ``<`` at all (``object()``,
+    7. Values whose type has no working ``<`` at all (``object()``,
        ``range()``, user classes without ``__lt__``) are likewise rejected
        — otherwise the raw ``TypeError`` would only surface mid-sort.
-    7. User classes must override both ``__lt__`` AND ``__eq__``. A class
+    8. User classes must override both ``__lt__`` AND ``__eq__``. A class
        that defines only ``__lt__`` (e.g. one that always returns
        ``False``) would otherwise pass the ``<`` probe and then silently
        break trichotomy: with the default identity ``__eq__``, two
@@ -68,6 +77,14 @@ class _OrderableValue:
        ``functools.total_ordering``'s synthesised ``__gt__`` (defined as
        ``not (a < b) and a != b``) reports both ``a > b`` and ``b > a``
        as true and ``compare`` returns ``+1`` in both directions.
+    9. As a final safety net, ``__lt__`` catches any ``TypeError`` raised
+       by the underlying tuple comparison and re-raises it as
+       :class:`SortOrderViolation`. Some types pass each per-value
+       ``value < value`` probe individually but raise when compared
+       across instances — naive vs. timezone-aware ``datetime.datetime``
+       is the canonical case (``TypeError: can't compare offset-naive
+       and offset-aware datetimes``). Callers get the documented
+       ordering-violation error instead of a raw ``TypeError`` mid-sort.
     """
 
     __slots__ = ("_key_tuple",)
@@ -83,16 +100,16 @@ class _OrderableValue:
                 "a sort-key column: it has no usable total order"
             )
         if value is None:
-            return (0, "", 0, ())
+            return (0, "", 0, 0, ())
         if isinstance(value, float) and math.isnan(value):
             # All NaNs compare equal to each other and sort after real floats.
-            return (1, "float", 1, 0.0)
+            return (1, "float", 1, id(float), 0.0)
         if isinstance(value, (list, tuple)):
             # Recurse so heterogeneous / NaN inner elements can't break the
             # total order via Python's native element-wise tuple compare.
             normalized = tuple(cls._normalize(v) for v in value)
-            return (1, type(value).__qualname__, 0, normalized)
-        cls = type(value)
+            return (1, type(value).__qualname__, 0, id(type(value)), normalized)
+        val_cls = type(value)
         # Require the class to explicitly override both ``__lt__`` AND
         # ``__eq__``. A class that defines only ``__lt__`` (returning
         # ``False`` always, say) would otherwise pass the ``<`` probe
@@ -101,9 +118,9 @@ class _OrderableValue:
         # neither ``<`` nor ``==``, and ``@total_ordering``'s
         # synthesised ``__gt__`` then reports both directions as
         # ``True``, so ``compare`` returns ``+1`` both ways.
-        if cls.__lt__ is object.__lt__ or cls.__eq__ is object.__eq__:
+        if val_cls.__lt__ is object.__lt__ or val_cls.__eq__ is object.__eq__:
             raise SortOrderViolation(
-                f"value of type {cls.__qualname__!r} cannot be used as "
+                f"value of type {val_cls.__qualname__!r} cannot be used as "
                 "a sort-key column: its class must explicitly define both "
                 "__lt__ and __eq__ to provide a usable total order"
             )
@@ -115,10 +132,13 @@ class _OrderableValue:
             value < value  # noqa: B015 - probing __lt__ for total-order support
         except TypeError:
             raise SortOrderViolation(
-                f"value of type {cls.__qualname__!r} cannot be used as "
+                f"value of type {val_cls.__qualname__!r} cannot be used as "
                 "a sort-key column: it has no usable total order"
             ) from None
-        return (1, cls.__qualname__, 0, value)
+        # ``id(val_cls)`` disambiguates distinct classes that happen to
+        # share ``__qualname__`` (factory-produced classes, redefined
+        # classes, etc.) so their values never reach a cross-class ``<``.
+        return (1, val_cls.__qualname__, 0, id(val_cls), value)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):
@@ -128,7 +148,18 @@ class _OrderableValue:
     def __lt__(self, other: "_OrderableValue") -> bool:
         if not isinstance(other, _OrderableValue):
             return NotImplemented
-        return self._key_tuple < other._key_tuple
+        try:
+            return self._key_tuple < other._key_tuple
+        except TypeError as exc:
+            # Two values whose types each pass the per-value ``<`` probe
+            # can still raise when compared to each other: naive vs.
+            # timezone-aware ``datetime.datetime`` is the canonical
+            # offender. Surface this as the documented ordering-violation
+            # error rather than letting a raw ``TypeError`` escape mid-sort.
+            raise SortOrderViolation(
+                "values cannot be ordered against each other: "
+                f"{exc}"
+            ) from exc
 
 
 @dataclass(frozen=True)
