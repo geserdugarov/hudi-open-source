@@ -83,14 +83,13 @@ class TestHoodieMergeSortLogRecordScanner {
         record("k5", "log2", 3L));
 
     AtomicInteger mergeCalls = new AtomicInteger(0);
-    HoodieMergeSortLogRecordScanner.RecordMergeFn<IndexedRecord> lastWriteWins = (older, newer) -> {
+    HoodieMergeSortLogRecordScanner.RecordMergeFn<HoodieRecord<IndexedRecord>> lastWriteWins = (older, newer) -> {
       mergeCalls.incrementAndGet();
-      // Both records survived into the merger; choosing newer matches commit-time semantics.
       return newer;
     };
 
-    try (HoodieMergeSortLogRecordScanner<IndexedRecord> scanner =
-             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilder()
+    try (HoodieMergeSortLogRecordScanner<HoodieRecord<IndexedRecord>> scanner =
+             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilderForHoodieRecords()
                  .addStream("base", ClosableIterator.wrap(base.iterator()))
                  .addStream("log1", ClosableIterator.wrap(block1.iterator()))
                  .addStream("log2", ClosableIterator.wrap(block2.iterator()))
@@ -105,16 +104,13 @@ class TestHoodieMergeSortLogRecordScanner {
         }
       }
 
-      // Output must be sorted by key.
       List<String> keys = new ArrayList<>();
       for (HoodieRecord<IndexedRecord> r : emitted) {
         keys.add(r.getRecordKey());
       }
       assertEquals(Arrays.asList("k1", "k2", "k3", "k4", "k5"), keys);
 
-      // k1 was present in base, log1, log2 → 2 merge calls.
-      // k2 was present in base, log2 → 1 merge call.
-      // k3, k4, k5 are unique → no merge call each.
+      // k1 in 3 streams → 2 merges; k2 in 2 streams → 1 merge; k3/k4/k5 unique → 0 each.
       assertEquals(3, mergeCalls.get(),
           "Merger should be invoked once per overlapping pair");
 
@@ -131,15 +127,50 @@ class TestHoodieMergeSortLogRecordScanner {
   }
 
   /**
-   * The empty-stream case must not break heap initialization, and a single-stream input should
-   * pass through unchanged.
+   * Within-stream duplicate-key handling: a single ordered stream may emit several adjacent
+   * records sharing a key. The scanner must fold them all via the merger so the output never
+   * contains duplicate keys.
    */
   @Test
-  void handlesEmptyAndSingleStreamInputs() {
-    HoodieMergeSortLogRecordScanner.RecordMergeFn<IndexedRecord> nopMerger = (older, newer) -> newer;
+  void mergesAdjacentDuplicateKeysWithinASingleStream() {
+    List<HoodieRecord<IndexedRecord>> stream = Arrays.asList(
+        record("k1", "v1a", 1L),
+        record("k1", "v1b", 2L),
+        record("k1", "v1c", 3L),
+        record("k2", "v2a", 1L),
+        record("k2", "v2b", 2L));
 
-    try (HoodieMergeSortLogRecordScanner<IndexedRecord> empty =
-             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilder()
+    AtomicInteger mergeCalls = new AtomicInteger(0);
+    HoodieMergeSortLogRecordScanner.RecordMergeFn<HoodieRecord<IndexedRecord>> lastWriteWins = (older, newer) -> {
+      mergeCalls.incrementAndGet();
+      return newer;
+    };
+
+    try (HoodieMergeSortLogRecordScanner<HoodieRecord<IndexedRecord>> scanner =
+             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilderForHoodieRecords()
+                 .addStream("only", ClosableIterator.wrap(stream.iterator()))
+                 .withMergeFn(lastWriteWins)
+                 .build()) {
+      List<HoodieRecord<IndexedRecord>> emitted = new ArrayList<>();
+      try (ClosableIterator<HoodieRecord<IndexedRecord>> it = scanner.iterator()) {
+        while (it.hasNext()) {
+          emitted.add(it.next());
+        }
+      }
+      assertEquals(Arrays.asList("k1", "k2"), emitted.stream().map(HoodieRecord::getRecordKey).collect(java.util.stream.Collectors.toList()),
+          "Adjacent same-key records within a stream must be folded into a single output");
+      assertEquals(3, mergeCalls.get(), "k1 (3 records) → 2 merges, k2 (2 records) → 1 merge = 3 total");
+      assertEquals("v1c", valueOf(emitted.get(0)));
+      assertEquals("v2b", valueOf(emitted.get(1)));
+    }
+  }
+
+  @Test
+  void handlesEmptyAndSingleStreamInputs() {
+    HoodieMergeSortLogRecordScanner.RecordMergeFn<HoodieRecord<IndexedRecord>> nopMerger = (older, newer) -> newer;
+
+    try (HoodieMergeSortLogRecordScanner<HoodieRecord<IndexedRecord>> empty =
+             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilderForHoodieRecords()
                  .addStream("empty", ClosableIterator.wrap(Collections.<HoodieRecord<IndexedRecord>>emptyIterator()))
                  .withMergeFn(nopMerger)
                  .build()) {
@@ -150,8 +181,8 @@ class TestHoodieMergeSortLogRecordScanner {
 
     List<HoodieRecord<IndexedRecord>> single = Arrays.asList(
         record("a", "v", 1L), record("b", "v", 1L), record("c", "v", 1L));
-    try (HoodieMergeSortLogRecordScanner<IndexedRecord> scanner =
-             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilder()
+    try (HoodieMergeSortLogRecordScanner<HoodieRecord<IndexedRecord>> scanner =
+             HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilderForHoodieRecords()
                  .addStream("only", ClosableIterator.wrap(single.iterator()))
                  .withMergeFn(nopMerger)
                  .build()) {
@@ -167,8 +198,8 @@ class TestHoodieMergeSortLogRecordScanner {
 
   @Test
   void iteratorIsSingleUseToAvoidAccidentalDoubleConsumption() {
-    HoodieMergeSortLogRecordScanner<IndexedRecord> scanner =
-        HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilder()
+    HoodieMergeSortLogRecordScanner<HoodieRecord<IndexedRecord>> scanner =
+        HoodieMergeSortLogRecordScanner.<IndexedRecord>newBuilderForHoodieRecords()
             .addStream("only", ClosableIterator.wrap(Arrays.asList(record("a", "v", 1L)).iterator()))
             .withMergeFn((older, newer) -> newer)
             .build();
@@ -180,18 +211,18 @@ class TestHoodieMergeSortLogRecordScanner {
 
   /**
    * Streaming merge-sort is opt-in: it must run only when the config is enabled <em>and</em> every
-   * data/delete block carries IS_ORDERED. Any unordered block forces a fallback. Non-data blocks
-   * (command, corrupt) do not participate in the decision.
+   * log block carries {@code IS_ORDERED=true}. Per RFC-81 any unordered block — including command
+   * or corrupt blocks that lack the header — forces a fallback to the legacy scanner.
    */
   @Test
   void shouldUseMergeSortRespectsConfigAndOrderingFlag() {
-    HoodieLogBlock orderedDataBlock = stubDataBlock(true);
-    HoodieLogBlock orderedDeleteBlock = stubDeleteBlock(true);
-    HoodieLogBlock unorderedDataBlock = stubDataBlock(false);
-    HoodieLogBlock commandBlock = stubCommandBlock();
-    HoodieLogBlock corruptBlock = stubCorruptBlock();
+    HoodieLogBlock orderedDataBlock = stubBlock(HoodieLogBlock.HoodieLogBlockType.AVRO_DATA_BLOCK, true);
+    HoodieLogBlock orderedDeleteBlock = stubBlock(HoodieLogBlock.HoodieLogBlockType.DELETE_BLOCK, true);
+    HoodieLogBlock unorderedDataBlock = stubBlock(HoodieLogBlock.HoodieLogBlockType.AVRO_DATA_BLOCK, false);
+    HoodieLogBlock commandBlock = stubBlock(HoodieLogBlock.HoodieLogBlockType.COMMAND_BLOCK, false);
+    HoodieLogBlock corruptBlock = stubBlock(HoodieLogBlock.HoodieLogBlockType.CORRUPT_BLOCK, false);
 
-    // Disabled config → never use merge-sort.
+    // Disabled config → never use merge-sort, even when blocks are ordered.
     assertFalse(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
         false, Arrays.asList(orderedDataBlock, orderedDeleteBlock)));
 
@@ -203,13 +234,18 @@ class TestHoodieMergeSortLogRecordScanner {
     assertFalse(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
         true, Arrays.asList(orderedDataBlock, unorderedDataBlock, orderedDeleteBlock)));
 
-    // Command and corrupt blocks are ignored when evaluating ordering.
-    assertTrue(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
-        true, Arrays.asList(commandBlock, orderedDataBlock, corruptBlock)));
+    // Command blocks lack IS_ORDERED → fallback (RFC-81 strict reading: any block without the
+    // header forces legacy path).
+    assertFalse(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
+        true, Arrays.asList(orderedDataBlock, commandBlock)));
 
-    // No data blocks at all → vacuously enabled (the merge-sort path will simply emit nothing).
+    // Corrupt blocks similarly force fallback.
+    assertFalse(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
+        true, Arrays.asList(orderedDataBlock, corruptBlock)));
+
+    // No log blocks at all is trivially eligible.
     assertTrue(HoodieMergeSortLogRecordScanner.shouldUseMergeSort(
-        true, Collections.singletonList(commandBlock)));
+        true, Collections.<HoodieLogBlock>emptyList()));
   }
 
   /**
@@ -225,7 +261,6 @@ class TestHoodieMergeSortLogRecordScanner {
           "HoodieMergeSortLogRecordScanner must not declare an ExternalSpillableMap field, "
               + "but found one named '" + field.getName() + "'");
     }
-    // Also check inner classes.
     for (Class<?> inner : scannerClass.getDeclaredClasses()) {
       for (Field field : inner.getDeclaredFields()) {
         assertFalse(ExternalSpillableMap.class.isAssignableFrom(field.getType()),
@@ -254,20 +289,8 @@ class TestHoodieMergeSortLogRecordScanner {
     return String.valueOf(record.getData().get(VALUE_POS));
   }
 
-  private static HoodieLogBlock stubDataBlock(boolean ordered) {
-    return new TestLogBlock(HoodieLogBlock.HoodieLogBlockType.AVRO_DATA_BLOCK, ordered);
-  }
-
-  private static HoodieLogBlock stubDeleteBlock(boolean ordered) {
-    return new TestLogBlock(HoodieLogBlock.HoodieLogBlockType.DELETE_BLOCK, ordered);
-  }
-
-  private static HoodieLogBlock stubCommandBlock() {
-    return new TestLogBlock(HoodieLogBlock.HoodieLogBlockType.COMMAND_BLOCK, false);
-  }
-
-  private static HoodieLogBlock stubCorruptBlock() {
-    return new TestLogBlock(HoodieLogBlock.HoodieLogBlockType.CORRUPT_BLOCK, false);
+  private static HoodieLogBlock stubBlock(HoodieLogBlock.HoodieLogBlockType type, boolean ordered) {
+    return new TestLogBlock(type, ordered);
   }
 
   /** Minimal {@link HoodieLogBlock} stub exposing only the type and IS_ORDERED header. */
