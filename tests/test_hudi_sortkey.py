@@ -40,6 +40,29 @@ class SortKeyConstructionTests(unittest.TestCase):
         sk = SortKey(columns=("a", "b"))
         self.assertEqual(sk.descending, (False, False))
 
+    def test_string_columns_rejected(self):
+        # ``str`` is iterable, so ``tuple("id")`` silently expands to
+        # ``("i", "d")`` — a one-column key would then be misinterpreted
+        # as a two-column key, producing wrong fingerprints and wrong
+        # extracts. Reject the misuse up front with a TypeError that
+        # points at the fix.
+        with self.assertRaises(TypeError) as cm:
+            SortKey(columns="id")
+        # The error should mention the fix (wrap in a tuple) so the
+        # caller can correct without spelunking through the source.
+        self.assertIn("'id'", str(cm.exception))
+
+    def test_bytes_columns_rejected(self):
+        # ``bytes`` is also iterable (yielding ints) — same trap.
+        with self.assertRaises(TypeError):
+            SortKey(columns=b"id")
+
+    def test_single_element_tuple_columns_accepted(self):
+        # The documented one-column form must keep working.
+        sk = SortKey(columns=("id",))
+        self.assertEqual(sk.columns, ("id",))
+        self.assertEqual(sk.descending, (False,))
+
 
 class SortKeyExtractTests(unittest.TestCase):
     def test_extract_pulls_columns_in_order(self):
@@ -319,13 +342,16 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sorted([a, b], key=sk.sort_tuple)
 
-    def test_distinct_classes_with_same_qualname_dont_collide(self):
-        # Regression: bucketing by ``__qualname__`` alone let two distinct
-        # classes that share a qualname (factory-produced classes both
-        # named ``make_class.<locals>.C``) fall through to a raw
-        # cross-class ``<``. With each class's ``__lt__`` returning
-        # ``False`` for "other" instances, both ``compare(a, b)`` and
-        # ``compare(b, a)`` came back as ``+1`` — not a total order.
+    def test_distinct_classes_with_same_qualname_are_rejected(self):
+        # Two distinct classes can share ``__qualname__`` (factory-produced
+        # classes both end up as ``make_class.<locals>.C``). With each
+        # class's ``__lt__`` / ``__eq__`` gated on ``isinstance``, an
+        # instance of A and an instance of B satisfy neither ``<`` in
+        # either direction nor ``==`` — there is no deterministic order.
+        # An earlier revision baked ``id(type)`` into the key as a
+        # tiebreaker, but ``id`` is process-local and would silently
+        # re-order persisted data on the next run. The wrapper now
+        # surfaces this as :class:`SortOrderViolation` instead.
         from functools import total_ordering
 
         def make_class():
@@ -354,12 +380,17 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         sk = SortKey(columns=("v",))
         a = Record(primary_key=(0,), payload={"v": A(1)}, sequence=0)
         b = Record(primary_key=(1,), payload={"v": B(1)}, sequence=0)
-        ab = sk.compare(a, b)
-        ba = sk.compare(b, a)
-        # Strict antisymmetry and trichotomy: distinct classes are never
-        # equal under this wrapper, and the two directions must be opposite.
-        self.assertNotEqual(ab, 0)
-        self.assertEqual(ab, -ba)
+        # Each instance individually still normalises (self-compare succeeds).
+        sk.sort_tuple(a)
+        sk.sort_tuple(b)
+        # But pairwise the comparator must refuse rather than invent an
+        # order, in *both* directions and through ``sorted``.
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(a, b)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(b, a)
+        with self.assertRaises(SortOrderViolation):
+            sorted([a, b], key=sk.sort_tuple)
 
     def test_decimal_nan_value_rejected(self):
         # Regression: ``_normalize`` previously caught only ``TypeError``
@@ -389,18 +420,17 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         with self.assertRaises(SortOrderViolation):
             sk.sort_tuple(r)
 
-    def test_user_class_with_broken_lt_falls_back_to_total_order(self):
-        # Regression: a class can override BOTH ``__lt__`` and ``__eq__``
-        # (passing the strict signature check and the per-value ``<``
-        # probe) and still ship a semantically broken ``__lt__`` — the
-        # canonical case is ``__lt__`` always returning ``False`` paired
-        # with an identity-based ``__eq__``. Two distinct instances then
-        # satisfy neither ``a < b`` nor ``b < a`` nor ``a == b``, and a
-        # naive comparator returns ``+1`` in both directions, violating
-        # the issue's total-order contract. ``_FallbackOrdered`` wraps
-        # the value with an ``id()``-based tiebreaker that fires only
-        # when the user's own ``<`` and ``==`` both fail to decide, so
-        # the comparator stays antisymmetric and trichotomous.
+    def test_user_class_with_broken_lt_is_rejected(self):
+        # A class can override BOTH ``__lt__`` and ``__eq__`` (passing
+        # the strict signature check and the per-value ``<`` probe) and
+        # still ship a semantically broken ``__lt__`` — the canonical
+        # case is ``__lt__`` always returning ``False`` paired with an
+        # identity-based ``__eq__``. Two distinct instances then satisfy
+        # neither ``a < b`` nor ``b < a`` nor ``a == b``: there is no
+        # deterministic order. An earlier revision fell back to ``id()``
+        # here, but ``id`` is process-local and would persist
+        # nondeterministic orderings to disk. The comparator must
+        # surface this as :class:`SortOrderViolation` instead.
         class BrokenLt:
             def __lt__(self, other):
                 return False
@@ -414,28 +444,20 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         sk = SortKey(columns=("v",))
         a = Record(primary_key=(0,), payload={"v": BrokenLt()}, sequence=0)
         b = Record(primary_key=(1,), payload={"v": BrokenLt()}, sequence=0)
-        ab = sk.compare(a, b)
-        ba = sk.compare(b, a)
-        # Antisymmetry: the two directions must be exact opposites, and
-        # distinct instances must never silently tie under a broken ``<``.
-        self.assertNotEqual(ab, 0)
-        self.assertEqual(ab, -ba)
-        # Self-compare still returns 0 — the user's identity ``__eq__``
-        # decides before the fallback fires.
+        # Per-value normalisation still succeeds — the value alone is
+        # well-formed, the trouble is purely pairwise.
+        sk.sort_tuple(a)
+        # Self-compare still returns 0: the user's ``==`` decides before
+        # the fallback fires (legitimate semantics are preserved).
         self.assertEqual(sk.compare(a, a), 0)
-        # ``sorted`` must produce a stable, total order over a population
-        # of such broken-but-overridden values.
-        records = [
-            Record(primary_key=(i,), payload={"v": BrokenLt()}, sequence=0)
-            for i in range(5)
-        ]
-        ordered = sorted(records, key=sk.sort_tuple)
-        self.assertEqual(len(ordered), 5)
-        # Two passes over the same input must yield the same order.
-        self.assertEqual(
-            [id(r) for r in ordered],
-            [id(r) for r in sorted(records, key=sk.sort_tuple)],
-        )
+        # But a cross-instance compare must refuse rather than invent an
+        # order, in both directions and through ``sorted``.
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(a, b)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(b, a)
+        with self.assertRaises(SortOrderViolation):
+            sorted([a, b], key=sk.sort_tuple)
 
     def test_user_class_with_lt_is_accepted(self):
         # Sanity check: a value that does implement ``__lt__`` still works.

@@ -34,19 +34,22 @@ _UNORDERABLE_TYPES: Tuple[type, ...] = (complex, dict, set, frozenset)
 
 
 class _FallbackOrdered:
-    """Guarantees a total order over a single value, even if the value's
-    own ``<`` is semantically broken.
+    """Detects values whose ``<`` and ``==`` together fail to produce a
+    total order, and rejects them deterministically.
 
-    Uses the user's ``==`` and ``<`` when they decide the comparison
-    (matching legitimate user semantics: two content-equal instances
-    sort as equal, ordered instances sort by the user's order). When
-    neither direction nor equality decides — the failure mode of a
-    class whose ``__lt__`` always returns ``False``, for example —
-    falls back to ``id()`` so the comparator is still antisymmetric
-    and trichotomous. Without this fallback, two distinct instances of
-    such a class would satisfy neither ``a < b`` nor ``b < a`` nor
-    ``a == b``, and :meth:`SortKey.compare` would return ``+1`` in
-    both directions.
+    Defers to the user's ``==`` and ``<`` when either decides the
+    comparison (matching legitimate user semantics: two content-equal
+    instances sort as equal, ordered instances sort by the user's
+    order). When neither direction nor equality decides — the failure
+    mode of a class whose ``__lt__`` always returns ``False`` paired
+    with an identity-based ``__eq__``, for example — raises
+    :class:`SortOrderViolation` rather than inventing an order.
+
+    An earlier revision fell back to ``id()`` here, but ``id()`` is
+    process-local: the same two values can sort one way today and the
+    other way tomorrow, which is unsafe for on-disk record ordering.
+    Rejecting up front turns a silent nondeterminism bug into a loud
+    failure at write time.
     """
 
     __slots__ = ("_value",)
@@ -57,6 +60,14 @@ class _FallbackOrdered:
     def _raise(self, exc: BaseException) -> "SortOrderViolation":
         return SortOrderViolation(
             f"values cannot be ordered against each other: {exc}"
+        )
+
+    def _undecided(self) -> "SortOrderViolation":
+        return SortOrderViolation(
+            f"values of type {type(self._value).__qualname__!r} cannot be "
+            "deterministically ordered: their __lt__ and __eq__ together "
+            "decide neither equality nor either direction (e.g. __lt__ "
+            "always returns False with an identity-based __eq__)"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -85,9 +96,12 @@ class _FallbackOrdered:
                 return False
         except Exception as exc:
             raise self._raise(exc) from exc
-        # The user's ``<`` did not decide between two distinct values.
-        # Fall back to ``id()`` so the comparator stays a total order.
-        return id(self._value) < id(other._value)
+        # Neither direction nor equality decided. We refuse to invent an
+        # order — any tiebreaker we could synthesise here (``id()``,
+        # ``hash()``, ``repr()``) is either process-local or not
+        # guaranteed unique, so persisting records under such an order
+        # would leave files that re-sort differently across runs.
+        raise self._undecided()
 
 
 @total_ordering
@@ -95,38 +109,32 @@ class _OrderableValue:
     """Wraps a column value so the result of comparisons is a true total order.
 
     Each value is normalised to a
-    ``(bucket, type_name, nan_tag, type_id, payload)`` 5-tuple. Comparing
-    two such tuples with Python's native ``<`` then yields a true total
-    order because:
+    ``(bucket, type_name, nan_tag, payload)`` 4-tuple. Comparing two such
+    tuples with Python's native ``<`` then yields a true total order
+    because:
 
     1. ``None`` always sorts first (bucket 0).
     2. Within bucket 1 we group by the value's type qualname so heterogeneous
        columns (e.g. mixing ``int`` and ``str``) get a deterministic order
-       instead of raising ``TypeError``.
+       instead of raising ``TypeError``. ``__qualname__`` alone is used —
+       not ``id(type)`` — because object identities vary across processes
+       and would silently re-sort persisted data on the next run.
     3. Within a single type bucket we additionally tag NaN floats so they
        sort after every real float and compare equal to each other —
        Python's native ``float('nan') < x`` and ``x < float('nan')`` are
        both False, which would otherwise let ``compare(a, b)`` and
        ``compare(b, a)`` both return +1.
-    4. The class identity (``id(type(value))``) is included as a further
-       tiebreaker so two distinct user classes that happen to share the
-       same ``__qualname__`` (e.g. classes built by a factory function,
-       both ending up as ``make_class.<locals>.C``) bucket separately
-       instead of falling through to a raw cross-class ``<``. Without
-       this, two such classes can pass each per-value probe and then
-       silently violate trichotomy at compare time, with both
-       ``compare(a, b)`` and ``compare(b, a)`` returning ``+1``.
-    5. ``list`` / ``tuple`` payloads are recursively normalised so a nested
+    4. ``list`` / ``tuple`` payloads are recursively normalised so a nested
        NaN or heterogeneous element can't smuggle a partial order back in
        at the inner-comparison step.
-    6. Other values whose native ``<`` is not a true total order
+    5. Other values whose native ``<`` is not a true total order
        (``complex``, ``dict``, ``set``, ``frozenset``) are rejected with
        :class:`SortOrderViolation`, even when they appear nested inside a
        list or tuple.
-    7. Values whose type has no working ``<`` at all (``object()``,
+    6. Values whose type has no working ``<`` at all (``object()``,
        ``range()``, user classes without ``__lt__``) are likewise rejected
        — otherwise the raw ``TypeError`` would only surface mid-sort.
-    8. User classes must override both ``__lt__`` AND ``__eq__``. A class
+    7. User classes must override both ``__lt__`` AND ``__eq__``. A class
        that defines only ``__lt__`` (e.g. one that always returns
        ``False``) would otherwise pass the ``<`` probe and then silently
        break trichotomy: with the default identity ``__eq__``, two
@@ -134,30 +142,30 @@ class _OrderableValue:
        ``functools.total_ordering``'s synthesised ``__gt__`` (defined as
        ``not (a < b) and a != b``) reports both ``a > b`` and ``b > a``
        as true and ``compare`` returns ``+1`` in both directions.
-    9. Even when *both* ``__lt__`` and ``__eq__`` are overridden, a user
+    8. Even when *both* ``__lt__`` and ``__eq__`` are overridden, a user
        class can still ship a semantically-broken ``__lt__`` (one that
-       always returns ``False`` is the canonical case). Such a class
-       passes both the strict signature check above and the per-value
-       ``value < value`` probe, yet for two distinct instances neither
-       direction nor equality decides — so ``compare`` once again
-       returns ``+1`` in both directions. Wrapping the value in
-       :class:`_FallbackOrdered` adds a deterministic ``id()``-based
-       tiebreaker that fires *only* when the user's ``<`` and ``==``
-       both fail to decide, so the comparator stays a true total order
-       without altering legitimate user semantics.
-    10. As a final safety net, both the per-value probe and ``__lt__``
-        catch *any* exception raised by the underlying ``<`` (not just
-        ``TypeError``) and re-raise it as :class:`SortOrderViolation`.
-        Some types pass the per-value ``value < value`` probe but raise
-        when compared across instances — naive vs. timezone-aware
-        ``datetime.datetime`` is the canonical case
-        (``TypeError: can't compare offset-naive and offset-aware
-        datetimes``). Other types raise non-``TypeError`` exceptions
-        even on self-comparison: ``decimal.Decimal('NaN') <
-        decimal.Decimal('NaN')`` raises ``decimal.InvalidOperation``,
-        which is *not* a ``TypeError``. Catching ``Exception`` keeps the
-        failure inside the documented :class:`SortOrderViolation`
-        contract instead of letting an arbitrary error escape mid-sort.
+       always returns ``False`` is the canonical case), and two distinct
+       classes can share a ``__qualname__`` (factory-produced classes
+       both ending up as ``make_class.<locals>.C``). Either situation
+       leaves two values whose ``<`` and ``==`` together decide nothing.
+       :class:`_FallbackOrdered` detects those cases at compare time and
+       raises :class:`SortOrderViolation`. We deliberately do *not* pad
+       the key with ``id(type)`` or ``id(value)`` to break ties — those
+       are process-local and would persist nondeterministic orderings
+       to disk.
+    9. As a final safety net, both the per-value probe and ``__lt__``
+       catch *any* exception raised by the underlying ``<`` (not just
+       ``TypeError``) and re-raise it as :class:`SortOrderViolation`.
+       Some types pass the per-value ``value < value`` probe but raise
+       when compared across instances — naive vs. timezone-aware
+       ``datetime.datetime`` is the canonical case
+       (``TypeError: can't compare offset-naive and offset-aware
+       datetimes``). Other types raise non-``TypeError`` exceptions
+       even on self-comparison: ``decimal.Decimal('NaN') <
+       decimal.Decimal('NaN')`` raises ``decimal.InvalidOperation``,
+       which is *not* a ``TypeError``. Catching ``Exception`` keeps the
+       failure inside the documented :class:`SortOrderViolation`
+       contract instead of letting an arbitrary error escape mid-sort.
     """
 
     __slots__ = ("_key_tuple",)
@@ -173,15 +181,15 @@ class _OrderableValue:
                 "a sort-key column: it has no usable total order"
             )
         if value is None:
-            return (0, "", 0, 0, ())
+            return (0, "", 0, ())
         if isinstance(value, float) and math.isnan(value):
             # All NaNs compare equal to each other and sort after real floats.
-            return (1, "float", 1, id(float), 0.0)
+            return (1, "float", 1, 0.0)
         if isinstance(value, (list, tuple)):
             # Recurse so heterogeneous / NaN inner elements can't break the
             # total order via Python's native element-wise tuple compare.
             normalized = tuple(cls._normalize(v) for v in value)
-            return (1, type(value).__qualname__, 0, id(type(value)), normalized)
+            return (1, type(value).__qualname__, 0, normalized)
         val_cls = type(value)
         # Require the class to explicitly override both ``__lt__`` AND
         # ``__eq__``. A class that defines only ``__lt__`` (returning
@@ -214,14 +222,15 @@ class _OrderableValue:
                 f"value of type {val_cls.__qualname__!r} cannot be used as "
                 "a sort-key column: it has no usable total order"
             ) from None
-        # ``id(val_cls)`` disambiguates distinct classes that happen to
-        # share ``__qualname__`` (factory-produced classes, redefined
-        # classes, etc.) so their values never reach a cross-class ``<``.
-        # ``_FallbackOrdered`` adds a deterministic tiebreaker for when
-        # the user's ``<`` is structurally complete but semantically
-        # broken (e.g. always returns ``False``); see point 9 in the
-        # class docstring.
-        return (1, val_cls.__qualname__, 0, id(val_cls), _FallbackOrdered(value))
+        # ``_FallbackOrdered`` defers to the user's ``<`` and ``==`` and
+        # raises :class:`SortOrderViolation` at compare time if neither
+        # decides — covering both factory-produced classes that share a
+        # qualname (``isinstance``-gated user methods then return False
+        # in every direction) and overridden-but-broken ``__lt__``
+        # implementations. We do not bake ``id(val_cls)`` or any other
+        # process-local handle into the key — that would silently change
+        # ordering across runs.
+        return (1, val_cls.__qualname__, 0, _FallbackOrdered(value))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):
@@ -262,6 +271,16 @@ class SortKey:
     descending: Tuple[bool, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        # ``str`` is iterable, so ``tuple("id") == ("i", "d")`` — silently
+        # treating ``SortKey(columns="id")`` as a two-column key is an easy
+        # caller mistake for a foundational API. Reject up front with a
+        # message that points at the fix.
+        if isinstance(self.columns, (str, bytes)):
+            raise TypeError(
+                "SortKey columns must be a sequence of column names, not a "
+                f"single {type(self.columns).__name__} ({self.columns!r}); "
+                f"pass ({self.columns!r},) for a one-column key"
+            )
         cols = tuple(self.columns)
         if not cols:
             raise ValueError("SortKey requires at least one column")
