@@ -37,7 +37,9 @@ _UNORDERABLE_TYPES: Tuple[type, ...] = (complex, dict, set, frozenset)
 class _OrderableValue:
     """Wraps a column value so the result of comparisons is a true total order.
 
-    Bucketing scheme (the 4-tuple ``_key`` below):
+    Each value is normalised to a ``(bucket, type_name, nan_tag, payload)``
+    4-tuple. Comparing two such tuples with Python's native ``<`` then yields
+    a true total order because:
 
     1. ``None`` always sorts first (bucket 0).
     2. Within bucket 1 we group by the value's type qualname so heterogeneous
@@ -48,26 +50,38 @@ class _OrderableValue:
        Python's native ``float('nan') < x`` and ``x < float('nan')`` are
        both False, which would otherwise let ``compare(a, b)`` and
        ``compare(b, a)`` both return +1.
-    4. Other top-level values whose native ``<`` is not a true total order
-       (``complex``, ``dict``, ``set``, ``frozenset``) are rejected at
-       construction with :class:`SortOrderViolation`.
+    4. ``list`` / ``tuple`` payloads are recursively normalised so a nested
+       NaN or heterogeneous element can't smuggle a partial order back in
+       at the inner-comparison step.
+    5. Other values whose native ``<`` is not a true total order
+       (``complex``, ``dict``, ``set``, ``frozenset``) are rejected with
+       :class:`SortOrderViolation`, even when they appear nested inside a
+       list or tuple.
     """
 
     __slots__ = ("_key_tuple",)
 
     def __init__(self, value: Any) -> None:
+        self._key_tuple: Tuple[Any, ...] = self._normalize(value)
+
+    @classmethod
+    def _normalize(cls, value: Any) -> Tuple[Any, ...]:
         if isinstance(value, _UNORDERABLE_TYPES):
             raise SortOrderViolation(
                 f"value of type {type(value).__qualname__!r} cannot be used as "
                 "a sort-key column: it has no usable total order"
             )
         if value is None:
-            self._key_tuple: Tuple[Any, ...] = (0, "", 0, None)
-        elif isinstance(value, float) and math.isnan(value):
+            return (0, "", 0, ())
+        if isinstance(value, float) and math.isnan(value):
             # All NaNs compare equal to each other and sort after real floats.
-            self._key_tuple = (1, "float", 1, 0.0)
-        else:
-            self._key_tuple = (1, type(value).__qualname__, 0, value)
+            return (1, "float", 1, 0.0)
+        if isinstance(value, (list, tuple)):
+            # Recurse so heterogeneous / NaN inner elements can't break the
+            # total order via Python's native element-wise tuple compare.
+            normalized = tuple(cls._normalize(v) for v in value)
+            return (1, type(value).__qualname__, 0, normalized)
+        return (1, type(value).__qualname__, 0, value)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):
@@ -136,12 +150,20 @@ class SortKey:
 
         Embedded in file headers so a reader can detect when a file was
         written under a different sort spec.
+
+        Each column is length-prefixed and the total column count is hashed
+        first, so distinct ``(columns, descending)`` pairs always produce
+        distinct byte streams. A naive ``col || sep`` encoding would let a
+        column whose name contains the separator byte collide with a
+        multi-column spec (e.g. ``("a", "b")`` vs ``("a\\x00\\x00b",)``).
         """
         h = hashlib.blake2b(digest_size=FINGERPRINT_BYTES)
+        h.update(len(self.columns).to_bytes(4, "big"))
         for col, desc in zip(self.columns, self.descending):
-            h.update(col.encode("utf-8"))
+            col_bytes = col.encode("utf-8")
+            h.update(len(col_bytes).to_bytes(4, "big"))
+            h.update(col_bytes)
             h.update(b"\x01" if desc else b"\x00")
-            h.update(b"\x00")  # column separator
         return h.digest()
 
 

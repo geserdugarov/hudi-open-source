@@ -187,6 +187,43 @@ class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
         r = Record(primary_key=(0,), payload={"v": {"a": 1}}, sequence=0)
         self.assertEqual(sk.extract(r), ({"a": 1},))
 
+    def test_heterogeneous_list_does_not_raise(self):
+        # Native list/tuple compare delegates to element ``<``, which would
+        # raise TypeError between e.g. int and str. The wrapper recurses so
+        # inner elements get the same type-bucket treatment.
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": [1, "x"]}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": [1, 2]}, sequence=0)
+        self.assertEqual(sk.compare(a, b), -sk.compare(b, a))
+        self.assertNotEqual(sk.compare(a, b), 0)
+
+    def test_nested_nan_in_list_preserves_antisymmetry(self):
+        # NaN inside a list would let native tuple compare report both
+        # directions as "not less" / "not equal". The recursive normalize
+        # buckets nested NaNs the same way as top-level ones.
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": [float("nan"), 1.0]}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": [1.0, 1.0]}, sequence=0)
+        self.assertEqual(sk.compare(a, b), -sk.compare(b, a))
+
+    def test_two_lists_with_nan_compare_equal(self):
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": [float("nan"), 1.0]}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": [float("nan"), 1.0]}, sequence=0)
+        self.assertEqual(sk.compare(a, b), 0)
+
+    def test_unorderable_value_nested_in_list_is_rejected(self):
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": [1, frozenset([2])]}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_unorderable_value_nested_in_tuple_is_rejected(self):
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": (1, {"a": 1})}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
 
 class SortKeyFingerprintTests(unittest.TestCase):
     def test_fingerprint_is_fixed_size(self):
@@ -205,6 +242,27 @@ class SortKeyFingerprintTests(unittest.TestCase):
 
     def test_fingerprint_distinguishes_direction(self):
         a = SortKey(columns=("a",), descending=(False,)).fingerprint()
+        b = SortKey(columns=("a",), descending=(True,)).fingerprint()
+        self.assertNotEqual(a, b)
+
+    def test_fingerprint_is_injective_across_separator_collisions(self):
+        # Regression: a previous encoding concatenated columns with raw
+        # NUL bytes and no length prefix, so a single column whose name
+        # embedded the separator could collide with a multi-column spec.
+        a = SortKey(columns=("a", "b")).fingerprint()
+        b = SortKey(columns=("a\x00\x00b",)).fingerprint()
+        self.assertNotEqual(a, b)
+
+    def test_fingerprint_distinguishes_split_point(self):
+        # ``ab`` as one column must not hash the same as ``a`` + ``b``.
+        a = SortKey(columns=("ab",)).fingerprint()
+        b = SortKey(columns=("a", "b")).fingerprint()
+        self.assertNotEqual(a, b)
+
+    def test_fingerprint_distinguishes_direction_byte_in_name(self):
+        # A name that ends with the direction-flag byte must not collide
+        # with the same name written under the opposite direction.
+        a = SortKey(columns=("a\x01",), descending=(False,)).fingerprint()
         b = SortKey(columns=("a",), descending=(True,)).fingerprint()
         self.assertNotEqual(a, b)
 
