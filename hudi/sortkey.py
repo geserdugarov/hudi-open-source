@@ -16,48 +16,68 @@
 """Composite sort/primary-key spec used to order records on disk."""
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from functools import total_ordering
 from typing import Any, Tuple
 
+from hudi.errors import SortOrderViolation
 from hudi.record import Record
 
 FINGERPRINT_BYTES = 16
 
+# Types that either raise on ``<`` (complex, dict) or only implement a
+# partial order (set, frozenset use subset semantics, so {1} and {2} are
+# mutually-incomparable). Any of these as a top-level key value would
+# break the total-order contract, so we reject them up front.
+_UNORDERABLE_TYPES: Tuple[type, ...] = (complex, dict, set, frozenset)
+
 
 @total_ordering
 class _OrderableValue:
-    """Wraps a column value so comparisons never raise.
+    """Wraps a column value so the result of comparisons is a true total order.
 
-    ``None`` always sorts first; otherwise values are compared first by
-    their type's qualified name, then by value. This gives a deterministic
-    total order even across heterogeneous column types.
+    Bucketing scheme (the 4-tuple ``_key`` below):
+
+    1. ``None`` always sorts first (bucket 0).
+    2. Within bucket 1 we group by the value's type qualname so heterogeneous
+       columns (e.g. mixing ``int`` and ``str``) get a deterministic order
+       instead of raising ``TypeError``.
+    3. Within a single type bucket we additionally tag NaN floats so they
+       sort after every real float and compare equal to each other —
+       Python's native ``float('nan') < x`` and ``x < float('nan')`` are
+       both False, which would otherwise let ``compare(a, b)`` and
+       ``compare(b, a)`` both return +1.
+    4. Other top-level values whose native ``<`` is not a true total order
+       (``complex``, ``dict``, ``set``, ``frozenset``) are rejected at
+       construction with :class:`SortOrderViolation`.
     """
 
-    __slots__ = ("_is_none", "_type", "_value")
+    __slots__ = ("_key_tuple",)
 
     def __init__(self, value: Any) -> None:
-        self._is_none = value is None
-        self._type = "" if self._is_none else type(value).__qualname__
-        self._value = value
-
-    def _key(self) -> Tuple[int, str, Any]:
-        # (none-flag, type-name, value) — tuples compare lexicographically.
-        return (0 if self._is_none else 1, self._type, self._value)
+        if isinstance(value, _UNORDERABLE_TYPES):
+            raise SortOrderViolation(
+                f"value of type {type(value).__qualname__!r} cannot be used as "
+                "a sort-key column: it has no usable total order"
+            )
+        if value is None:
+            self._key_tuple: Tuple[Any, ...] = (0, "", 0, None)
+        elif isinstance(value, float) and math.isnan(value):
+            # All NaNs compare equal to each other and sort after real floats.
+            self._key_tuple = (1, "float", 1, 0.0)
+        else:
+            self._key_tuple = (1, type(value).__qualname__, 0, value)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _OrderableValue):
             return NotImplemented
-        return self._key() == other._key()
+        return self._key_tuple == other._key_tuple
 
     def __lt__(self, other: "_OrderableValue") -> bool:
         if not isinstance(other, _OrderableValue):
             return NotImplemented
-        a, b = self._key(), other._key()
-        if a[:2] != b[:2]:
-            return a[:2] < b[:2]
-        # Same type bucket: fall back to native comparison.
-        return self._value < other._value
+        return self._key_tuple < other._key_tuple
 
 
 @dataclass(frozen=True)
@@ -91,6 +111,10 @@ class SortKey:
 
         Descending columns are wrapped in a reversing helper so that a
         single ascending sort over the tuple yields the desired order.
+
+        Raises :class:`SortOrderViolation` if any key column holds a value
+        whose type has no total order (``complex``, ``dict``, ``set``,
+        ``frozenset``).
         """
         out = []
         for col, desc in zip(self.columns, self.descending):

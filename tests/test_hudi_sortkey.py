@@ -14,8 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import unittest
 
+from hudi.errors import SortOrderViolation
 from hudi.record import Record
 from hudi.sortkey import FINGERPRINT_BYTES, SortKey
 
@@ -116,6 +118,74 @@ class SortKeyOrderingTests(unittest.TestCase):
         self.assertEqual([type(r.payload["id"]).__name__ for r in ordered],
                          ["int", "int", "str"])
         self.assertEqual([r.payload["id"] for r in ordered[:2]], [1, 2])
+
+
+class SortKeyTotalOrderEdgeCaseTests(unittest.TestCase):
+    """Native ``<`` is partial or undefined for several common Python types
+    and for NaN. The SortKey must still produce a true total order."""
+
+    def test_nan_does_not_violate_antisymmetry(self):
+        # Native float comparison: nan < x and x < nan are both False, so a
+        # naive ``compare`` could return +1 in both directions. The wrapper
+        # must put NaN in its own deterministic bucket.
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": float("nan")}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": 1.0}, sequence=0)
+        self.assertEqual(sk.compare(a, b), -sk.compare(b, a))
+        # NaN deterministically sorts after real floats.
+        self.assertGreater(sk.compare(a, b), 0)
+
+    def test_two_nans_compare_equal(self):
+        sk = SortKey(columns=("v",))
+        a = Record(primary_key=(0,), payload={"v": float("nan")}, sequence=0)
+        b = Record(primary_key=(1,), payload={"v": float("nan")}, sequence=0)
+        self.assertEqual(sk.compare(a, b), 0)
+
+    def test_nan_and_inf_order(self):
+        # +inf is a real float; NaN must sort strictly after it.
+        sk = SortKey(columns=("v",))
+        records = [
+            Record(primary_key=(i,), payload={"v": v}, sequence=0)
+            for i, v in enumerate([float("nan"), 0.0, float("inf"), -1.0])
+        ]
+        ordered = sorted(records, key=sk.sort_tuple)
+        values = [r.payload["v"] for r in ordered]
+        # First three are real floats in ascending order, last is NaN.
+        self.assertEqual(values[:3], [-1.0, 0.0, float("inf")])
+        self.assertTrue(math.isnan(values[3]))
+
+    def test_complex_value_rejected(self):
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": 1 + 2j}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_dict_value_rejected(self):
+        # ``dict`` has no ``<`` at all in Python 3.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": {"a": 1}}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.compare(r, r)
+
+    def test_set_value_rejected(self):
+        # ``set.__lt__`` is subset semantics — only a partial order.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": {1, 2}}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_frozenset_value_rejected(self):
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": frozenset([1, 2])}, sequence=0)
+        with self.assertRaises(SortOrderViolation):
+            sk.sort_tuple(r)
+
+    def test_extract_does_not_validate(self):
+        # ``extract`` returns raw values for downstream use; validation
+        # only happens when the wrapper has to produce an ordering.
+        sk = SortKey(columns=("v",))
+        r = Record(primary_key=(0,), payload={"v": {"a": 1}}, sequence=0)
+        self.assertEqual(sk.extract(r), ({"a": 1},))
 
 
 class SortKeyFingerprintTests(unittest.TestCase):
