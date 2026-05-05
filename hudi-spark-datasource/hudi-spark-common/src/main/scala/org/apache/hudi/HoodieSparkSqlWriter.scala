@@ -852,7 +852,6 @@ class HoodieSparkSqlWriterInternal {
 
     if (writeConfig.isDatasourceV2WriteEnabled) {
       val writeDf = prepareForUpsert(df, sqlContext, tableConfig, writeClient, instantTime)
-      writeDf.explain()
       val timer = HoodieTimer.start();
       writeDf.write.format("org.apache.hudi.dsv2")
         .option(DataSourceInternalWriterHelper.INSTANT_TIME_OPT_KEY, instantTime)
@@ -887,8 +886,6 @@ class HoodieSparkSqlWriterInternal {
 
   private def prepareForUpsert(df: DataFrame, sqlContext: SQLContext, tableConfig: HoodieTableConfig,
                                writeClient: SparkRDDWriteClient[_], instantTime: String) = {
-    import sqlContext.implicits._
-
     val properties = new TypedProperties
     writeClient.getConfig.getProps.forEach((k, v) => {
       properties.put(k, v)
@@ -899,70 +896,62 @@ class HoodieSparkSqlWriterInternal {
     val partitionGenUdf = udf((row: Row) => keyGenerator.getPartitionPath(row))
     sqlContext.udf.register("record_key_fn", keyGenUdf)
     sqlContext.udf.register("partition_fn", partitionGenUdf)
-    var newDf = df.withColumn(HoodieRecord.RECORD_KEY_METADATA_FIELD, keyGenUdf(struct("*")))
+    val newDf = df
+      .withColumn(HoodieRecord.RECORD_KEY_METADATA_FIELD, keyGenUdf(struct("*")))
       .withColumn(HoodieRecord.PARTITION_PATH_METADATA_FIELD, partitionGenUdf(struct("*")))
 
-    val fullOldDataDf = sqlContext.sparkSession.read.table(tableConfig.getTableName)
-    val workloadDf = newDf.as("new").join(fullOldDataDf.as("old"), $"new._hoodie_record_key" === $"old._hoodie_record_key", "left")
-      .select($"new._hoodie_record_key", $"new._hoodie_partition_path" as "new_partition_path", $"old._hoodie_partition_path" as "old_partition_path", $"old._hoodie_file_name")
-      .groupBy($"new_partition_path", $"old_partition_path", $"old._hoodie_file_name")
-      .agg(functions.count("*").alias("numRecs"))
-    workloadDf.explain()
+    // Project old table to only 3 columns needed for join — avoids scanning all data columns twice
+    val oldMetaDf = sqlContext.sparkSession.read.table(tableConfig.getTableName)
+      .select("_hoodie_record_key", "_hoodie_partition_path", "_hoodie_file_name")
 
-    //workloadDf.show(200)
-    val timer = HoodieTimer.start();
-    val (workloadProfile, oldDataFilter) = createWorkloadProfileAndFilter(workloadDf)
+    // Single left join: gives us file-name for each new record that updates an existing one
+    val joinedDf = newDf.join(
+      oldMetaDf.select(
+        col("_hoodie_record_key").as("_old_rk"),
+        col("_hoodie_partition_path").as("old_partition_path"),
+        col("_hoodie_file_name")
+      ),
+      newDf("_hoodie_record_key") === col("_old_rk"),
+      "left"
+    ).drop("_old_rk")
+
+    // Workload profile from the joined DF (no extra scan)
+    val workloadDf = joinedDf
+      .groupBy(
+        col("_hoodie_partition_path").as("new_partition_path"),
+        col("old_partition_path"),
+        col("_hoodie_file_name")
+      )
+      .agg(functions.count("*").alias("numRecs"))
+
+    val timer = HoodieTimer.start()
+    val (workloadProfile, _) = createWorkloadProfileAndFilter(workloadDf)
     System.out.println("createWorkloadProfileAndFilter for table: " + tableConfig.getTableName + " took " + timer.endTimer())
 
     val table = writeClient.initTable(WriteOperationType.UPSERT, org.apache.hudi.common.util.Option.ofNullable(instantTime))
     val upsertPartitioner = new UpsertPartitioner(workloadProfile, writeClient.getEngineContext, table, writeClient.getConfig, WriteOperationType.UPSERT)
+
+    val fileIdUdf = udf((fileName: String) => if (fileName == null) null else FSUtils.getFileId(fileName))
     val partitionUdf = udf((key: String, path: String, fileId: String) => upsertPartitioner.getPartition(key, path, fileId))
-    val recordKeyUdf = udf((newKey: String, oldKey: String) => {
-      if (oldKey == null) {
-        newKey
-      } else {
-        oldKey
-      }
-    })
-    val partitionPathUdf = udf((newPart: String, oldPart: String) => {
-      if (oldPart == null) {
-        newPart
-      } else {
-        oldPart
-      }
-    })
-    val fileIdUdf = udf((fileName: String) => {
-      if (fileName == null) {
-        null
-      } else {
-        FSUtils.getFileId(fileName)
-      }
-    })
     val newFileIdPfxUdf = udf((partition: Integer) => upsertPartitioner.getBucketInfo(partition).getFileIdPrefix)
 
     sqlContext.sparkSession.udf.register("partition", partitionUdf)
     sqlContext.sparkSession.udf.register("fileId", fileIdUdf)
     sqlContext.sparkSession.udf.register("newFileIdPfx", newFileIdPfxUdf)
-    sqlContext.sparkSession.udf.register("actualPartitionPath", partitionPathUdf)
-    sqlContext.sparkSession.udf.register("actualRecordKey", recordKeyUdf)
 
-    var updatedOldDataDf = sqlContext.sparkSession.read.table(tableConfig.getTableName).filter(oldDataFilter)
-    Range.inclusive(0, updatedOldDataDf.columns.length - 1).foreach(i =>
-      updatedOldDataDf = updatedOldDataDf.withColumnRenamed(updatedOldDataDf.columns(i), "old_" + updatedOldDataDf.columns(i))
-    )
-    Range.inclusive(0, newDf.columns.length -1).foreach(i =>
-      newDf = newDf.withColumnRenamed(newDf.columns(i), "new_" + newDf.columns(i))
-    )
-
-    val writeDf = newDf.join(updatedOldDataDf, $"new__hoodie_record_key" === $"old__hoodie_record_key", "full")
-      .withColumn("file_id", fileIdUdf($"old__hoodie_file_name"))
-      .withColumn("actual_partition_path", partitionPathUdf($"new__hoodie_partition_path", $"old__hoodie_partition_path"))
-      .withColumn("actual_record_key", recordKeyUdf($"new__hoodie_record_key", $"old__hoodie_record_key"))
-      .withColumn("partition_id", partitionUdf($"actual_record_key", col("actual_partition_path"), col("file_id")))
+    // writeDf contains ONLY new records enriched with routing columns — no old data rows in shuffle
+    val writeDf = joinedDf
+      .withColumn("file_id", fileIdUdf(col("_hoodie_file_name")))
+      .drop("_hoodie_file_name", "old_partition_path")
+      .withColumn("partition_id", partitionUdf(
+        col("_hoodie_record_key"),
+        col("_hoodie_partition_path"),
+        col("file_id")
+      ))
       .withColumn("file_id_pfx_new", newFileIdPfxUdf(col("partition_id")))
-      .repartition(col("partition_id"))
+      .repartition(upsertPartitioner.numPartitions(), col("partition_id"))
+      .sortWithinPartitions(col("partition_id"))
 
-    writeDf.show(false)
     writeDf
   }
 

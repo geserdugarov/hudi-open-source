@@ -105,7 +105,7 @@ public class ReflectionUtils {
     } catch (NoSuchMethodException e) {
       String message = "Unable to instantiate class " + clazz;
       if (silenceWarning) {
-        log.debug(message, e);
+        log.debug(message);
       } else {
         log.warn(message, e);
       }

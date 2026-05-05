@@ -280,7 +280,13 @@ class TestInsertTable2 extends HoodieSparkSqlTestBase {
   }
 
   test("Test dsv2 write to COW table") {
-    withSQLConf("hoodie.sql.insert.mode" -> "non-strict", "hoodie.bulkinsert.shuffle.parallelism" -> "1") {
+    withSQLConf(
+      "hoodie.sql.insert.mode" -> "non-strict",
+      "hoodie.bulkinsert.shuffle.parallelism" -> "1",
+      "hoodie.datasource.write.insert.drop.duplicates" -> "false",
+      "hoodie.sql.bulk.insert.enable" -> "true",
+      "spark.sql.sources.v2.bucketing.enabled" -> "true",
+      "hoodie.datasource.v2.write.support" -> "true") {
       withTempDir { tmp =>
         Seq("cow").foreach { tableType =>
           withTable(generateTableName) { tableName =>
@@ -299,12 +305,6 @@ class TestInsertTable2 extends HoodieSparkSqlTestBase {
                  | partitioned by (dt)
                  | location '${tmp.getCanonicalPath}/$tableName'
          """.stripMargin)
-            spark.sql("set hoodie.datasource.write.insert.drop.duplicates = false")
-
-            // Enable the bulk insert
-            spark.sql("set hoodie.sql.bulk.insert.enable = true")
-            spark.sql("set spark.sql.sources.v2.bucketing.enabled = true")
-            spark.sql("set hoodie.datasource.v2.write.support = true")
             spark.sql(s"insert into $tableName values(1, 'a1', 10, '2021-07-18')," +
               s"(2, 'a2', 10, '2021-07-18')," +
               s"(3, 'a3', 10, '2021-07-19')," +
@@ -315,8 +315,6 @@ class TestInsertTable2 extends HoodieSparkSqlTestBase {
             assertResult(WriteOperationType.BULK_INSERT) {
               getLastCommitMetadata(spark, s"${tmp.getCanonicalPath}/$tableName").getOperationType
             }
-//            spark.sql("set hoodie.sql.bulk.insert.enable = false")
-//            spark.sql("set hoodie.datasource.write.insert.drop.duplicates = true")
 
             spark.sql(s"insert into $tableName values(1, 'a1_1', 10, '2021-07-18')," +
               s"(2, 'a2_2', 10, '2021-07-18')," +
@@ -332,7 +330,7 @@ class TestInsertTable2 extends HoodieSparkSqlTestBase {
               Seq(5, "a5", 10.0, "2021-07-20"),
               Seq(6, "a6", 10.0, "2021-07-19"),
               Seq(7, "a7", 10.0, "2021-07-20"),
-              Seq(42, "a42", 10.0, "2021-07-21"),
+              Seq(42, "a42", 10.0, "2021-07-21")
             )
           }
         }
