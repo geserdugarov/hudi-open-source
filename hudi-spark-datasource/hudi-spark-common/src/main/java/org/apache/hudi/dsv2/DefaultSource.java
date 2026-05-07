@@ -34,6 +34,9 @@ import java.util.Map;
  */
 public class DefaultSource extends BaseDefaultSource implements TableProvider {
 
+  /** Format string used by Spark's {@code DataFrameWriter.format(...)} to route writes here. */
+  public static final String FORMAT_NAME = "org.apache.hudi.dsv2";
+
   @Override
   public StructType inferSchema(CaseInsensitiveStringMap options) {
     return StructType.fromDDL(options.get(HoodieWriteConfig.BULKINSERT_INPUT_DATA_SCHEMA_DDL));

@@ -37,19 +37,20 @@ import org.apache.hudi.common.model.HoodieTableType.{COPY_ON_WRITE, MERGE_ON_REA
 import org.apache.hudi.common.schema.{HoodieSchema, HoodieSchemaType, HoodieSchemaUtils => HoodieCommonSchemaUtils}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient, HoodieTableVersion, TableSchemaResolver}
 import org.apache.hudi.common.table.timeline.HoodieInstantTimeGenerator
-import org.apache.hudi.common.util.{CommitUtils, ConfigUtils, HoodieTimer, Option => HOption, ReflectionUtils, StringUtils}
+import org.apache.hudi.common.util.{CommitUtils, ConfigUtils, Option => HOption, ReflectionUtils, StringUtils}
 import org.apache.hudi.common.util.ConfigUtils.getAllConfigKeys
 import org.apache.hudi.common.util.collection.Pair
 import org.apache.hudi.config.{HoodieCompactionConfig, HoodieIndexConfig, HoodieInternalConfig, HoodieWriteConfig}
 import org.apache.hudi.config.HoodieBootstrapConfig.{BASE_PATH, INDEX_CLASS_NAME}
 import org.apache.hudi.config.HoodieWriteConfig.{SPARK_SQL_MERGE_INTO_PREPPED_KEY, WRITE_TABLE_VERSION}
-import org.apache.hudi.dsv2.DataSourceInternalWriterHelper
+import org.apache.hudi.dsv2.{DataSourceInternalWriterHelper, DefaultSource => HudiDsv2Source}
 import org.apache.hudi.exception.{HoodieException, HoodieRecordCreationException, HoodieWriteConflictException}
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 import org.apache.hudi.hive.{HiveSyncConfigHolder, HiveSyncTool}
 import org.apache.hudi.hive.ddl.HiveSyncMode
 import org.apache.hudi.index.HoodieIndex
 import org.apache.hudi.index.bucket.partition.PartitionBucketIndexUtils
+import org.apache.hudi.io.storage.row.HoodieUpsertHandle
 import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.hudi.internal.schema.convert.InternalSchemaConverter
 import org.apache.hudi.internal.schema.utils.SerDeHelper
@@ -75,7 +76,7 @@ import org.apache.spark.{SPARK_VERSION, SparkContext}
 import org.apache.spark.api.java.{JavaRDD, JavaSparkContext}
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
-import org.apache.spark.sql.functions.{call_udf, col, struct, udf}
+import org.apache.spark.sql.functions.{col, struct, udf}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.types.StructType
 import org.slf4j.LoggerFactory
@@ -852,14 +853,12 @@ class HoodieSparkSqlWriterInternal {
 
     if (writeConfig.isDatasourceV2WriteEnabled) {
       val writeDf = prepareForUpsert(df, sqlContext, tableConfig, writeClient, instantTime)
-      val timer = HoodieTimer.start();
-      writeDf.write.format("org.apache.hudi.dsv2")
+      writeDf.write.format(HudiDsv2Source.FORMAT_NAME)
         .option(DataSourceInternalWriterHelper.INSTANT_TIME_OPT_KEY, instantTime)
         .option(HoodieWriteConfig.BULKINSERT_INPUT_DATA_SCHEMA_DDL, writeDf.schema.toDDL)
         .options(parameters ++ Map(HoodieWriteConfig.WRITE_SCHEMA_OVERRIDE.key -> writerSchema.toString))
         .mode(SaveMode.Append)
         .save()
-      System.out.println("write for table " + tableConfig.getTableName + " took " + timer.endTimer())
 
       val hiveSyncEnabled = parameters.get(HIVE_SYNC_ENABLED_OPT_KEY).exists(r => r.toBoolean)
       val metaSyncEnabled = parameters.get(META_SYNC_ENABLED_OPT_KEY).exists(r => r.toBoolean)
@@ -884,6 +883,14 @@ class HoodieSparkSqlWriterInternal {
 
   }
 
+  // Intermediate DataFrame columns used only inside prepareForUpsert / buildWorkloadProfile.
+  // Defined here so the producer (prepareForUpsert) and the consumer (buildWorkloadProfile)
+  // reference the same names.
+  private val OLD_RECORD_KEY_COL = "_old_rk"
+  private val OLD_PARTITION_PATH_COL = "old_partition_path"
+  private val NEW_PARTITION_PATH_COL = "new_partition_path"
+  private val NUM_RECS_COL = "numRecs"
+
   private def prepareForUpsert(df: DataFrame, sqlContext: SQLContext, tableConfig: HoodieTableConfig,
                                writeClient: SparkRDDWriteClient[_], instantTime: String) = {
     val properties = new TypedProperties
@@ -894,39 +901,38 @@ class HoodieSparkSqlWriterInternal {
     val keyGenerator = ReflectionUtils.loadClass(keyGeneratorClass, properties).asInstanceOf[BuiltinKeyGenerator]
     val keyGenUdf = udf((row: Row) => keyGenerator.getRecordKey(row))
     val partitionGenUdf = udf((row: Row) => keyGenerator.getPartitionPath(row))
-    sqlContext.udf.register("record_key_fn", keyGenUdf)
-    sqlContext.udf.register("partition_fn", partitionGenUdf)
     val newDf = df
       .withColumn(HoodieRecord.RECORD_KEY_METADATA_FIELD, keyGenUdf(struct("*")))
       .withColumn(HoodieRecord.PARTITION_PATH_METADATA_FIELD, partitionGenUdf(struct("*")))
 
     // Project old table to only 3 columns needed for join — avoids scanning all data columns twice
     val oldMetaDf = sqlContext.sparkSession.read.table(tableConfig.getTableName)
-      .select("_hoodie_record_key", "_hoodie_partition_path", "_hoodie_file_name")
+      .select(
+        HoodieRecord.RECORD_KEY_METADATA_FIELD,
+        HoodieRecord.PARTITION_PATH_METADATA_FIELD,
+        HoodieRecord.FILENAME_METADATA_FIELD)
 
     // Single left join: gives us file-name for each new record that updates an existing one
     val joinedDf = newDf.join(
       oldMetaDf.select(
-        col("_hoodie_record_key").as("_old_rk"),
-        col("_hoodie_partition_path").as("old_partition_path"),
-        col("_hoodie_file_name")
+        col(HoodieRecord.RECORD_KEY_METADATA_FIELD).as(OLD_RECORD_KEY_COL),
+        col(HoodieRecord.PARTITION_PATH_METADATA_FIELD).as(OLD_PARTITION_PATH_COL),
+        col(HoodieRecord.FILENAME_METADATA_FIELD)
       ),
-      newDf("_hoodie_record_key") === col("_old_rk"),
+      newDf(HoodieRecord.RECORD_KEY_METADATA_FIELD) === col(OLD_RECORD_KEY_COL),
       "left"
-    ).drop("_old_rk")
+    ).drop(OLD_RECORD_KEY_COL)
 
     // Workload profile from the joined DF (no extra scan)
     val workloadDf = joinedDf
       .groupBy(
-        col("_hoodie_partition_path").as("new_partition_path"),
-        col("old_partition_path"),
-        col("_hoodie_file_name")
+        col(HoodieRecord.PARTITION_PATH_METADATA_FIELD).as(NEW_PARTITION_PATH_COL),
+        col(OLD_PARTITION_PATH_COL),
+        col(HoodieRecord.FILENAME_METADATA_FIELD)
       )
-      .agg(functions.count("*").alias("numRecs"))
+      .agg(functions.count("*").alias(NUM_RECS_COL))
 
-    val timer = HoodieTimer.start()
-    val (workloadProfile, _) = createWorkloadProfileAndFilter(workloadDf)
-    System.out.println("createWorkloadProfileAndFilter for table: " + tableConfig.getTableName + " took " + timer.endTimer())
+    val workloadProfile = buildWorkloadProfile(workloadDf)
 
     val table = writeClient.initTable(WriteOperationType.UPSERT, org.apache.hudi.common.util.Option.ofNullable(instantTime))
     val upsertPartitioner = new UpsertPartitioner(workloadProfile, writeClient.getEngineContext, table, writeClient.getConfig, WriteOperationType.UPSERT)
@@ -935,45 +941,36 @@ class HoodieSparkSqlWriterInternal {
     val partitionUdf = udf((key: String, path: String, fileId: String) => upsertPartitioner.getPartition(key, path, fileId))
     val newFileIdPfxUdf = udf((partition: Integer) => upsertPartitioner.getBucketInfo(partition).getFileIdPrefix)
 
-    sqlContext.sparkSession.udf.register("partition", partitionUdf)
-    sqlContext.sparkSession.udf.register("fileId", fileIdUdf)
-    sqlContext.sparkSession.udf.register("newFileIdPfx", newFileIdPfxUdf)
-
     // writeDf contains ONLY new records enriched with routing columns — no old data rows in shuffle
     val writeDf = joinedDf
-      .withColumn("file_id", fileIdUdf(col("_hoodie_file_name")))
-      .drop("_hoodie_file_name", "old_partition_path")
-      .withColumn("partition_id", partitionUdf(
-        col("_hoodie_record_key"),
-        col("_hoodie_partition_path"),
-        col("file_id")
+      .withColumn(HoodieUpsertHandle.FILE_ID_COL, fileIdUdf(col(HoodieRecord.FILENAME_METADATA_FIELD)))
+      .drop(HoodieRecord.FILENAME_METADATA_FIELD, OLD_PARTITION_PATH_COL)
+      .withColumn(HoodieUpsertHandle.PARTITION_ID_COL, partitionUdf(
+        col(HoodieRecord.RECORD_KEY_METADATA_FIELD),
+        col(HoodieRecord.PARTITION_PATH_METADATA_FIELD),
+        col(HoodieUpsertHandle.FILE_ID_COL)
       ))
-      .withColumn("file_id_pfx_new", newFileIdPfxUdf(col("partition_id")))
-      .repartition(upsertPartitioner.numPartitions(), col("partition_id"))
-      .sortWithinPartitions(col("partition_id"))
+      .withColumn(HoodieUpsertHandle.FILE_ID_PFX_NEW_COL, newFileIdPfxUdf(col(HoodieUpsertHandle.PARTITION_ID_COL)))
+      .repartition(upsertPartitioner.numPartitions(), col(HoodieUpsertHandle.PARTITION_ID_COL))
+      .sortWithinPartitions(col(HoodieUpsertHandle.PARTITION_ID_COL))
 
     writeDf
   }
 
-  private def createWorkloadProfileAndFilter(workloadDf: DataFrame): (WorkloadProfile, Row => Boolean) = {
+  private def buildWorkloadProfile(workloadDf: DataFrame): WorkloadProfile = {
     val globalStat = new WorkloadStat()
-    val updatedPartitions = mutable.Set[String]()
-    val updatedFiles = mutable.Set[String]()
     val partitionStatMap = new mutable.HashMap[String, WorkloadStat]()
     workloadDf.collectAsList().forEach(row => {
-      val fileName = row.getAs[String]("_hoodie_file_name")
-      val numRecs = row.getAs[Long]("numRecs")
-      val oldPartitionPath = row.getAs[String]("old_partition_path")
-      val newPartitionPath = row.getAs[String]("new_partition_path")
+      val fileName = row.getAs[String](HoodieRecord.FILENAME_METADATA_FIELD)
+      val numRecs = row.getAs[Long](NUM_RECS_COL)
+      val oldPartitionPath = row.getAs[String](OLD_PARTITION_PATH_COL)
+      val newPartitionPath = row.getAs[String](NEW_PARTITION_PATH_COL)
       if (oldPartitionPath == null) {
-        updatedPartitions.add(newPartitionPath)
         val insertStat = partitionStatMap.getOrElse(newPartitionPath, new WorkloadStat())
         insertStat.addInserts(numRecs)
         globalStat.addInserts(numRecs)
         partitionStatMap.put(newPartitionPath, insertStat)
       } else {
-        updatedPartitions.add(oldPartitionPath)
-        updatedFiles.add(fileName)
         val fileId = FSUtils.getFileId(fileName)
         val commitTime = FSUtils.getCommitTime(fileName)
         val location = new HoodieRecordLocation(commitTime, fileId)
@@ -983,10 +980,7 @@ class HoodieSparkSqlWriterInternal {
         partitionStatMap.put(oldPartitionPath, updateStat)
       }
     })
-    val filter = (row: Row) => {
-      updatedPartitions.contains(row.getAs[String]("_hoodie_partition_path"))
-    }
-    (new WorkloadProfile(Pair.of(partitionStatMap.asJava, globalStat)), filter)
+    new WorkloadProfile(Pair.of(partitionStatMap.asJava, globalStat))
   }
 
   private def handleSaveModes(spark: SparkSession, mode: SaveMode, tablePath: Path, tableConfig: HoodieTableConfig, tableName: String,

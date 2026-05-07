@@ -374,19 +374,16 @@ public class UpsertPartitioner<T> extends SparkHoodiePartitioner<T> {
   }
 
   public int getPartition(String recordKey, String partitionPath, String fileId) {
-    if (fileId != null) {
-      Integer part = updateLocationToBucket.get(fileId);
-      if (part == null) {
-        //log
-        System.out.println("recordKey=" + recordKey + ", partitionPath=" + partitionPath + ", fileId=" + fileId);
-        System.out.println(updateLocationToBucket);
-        return part;
-      } else {
-        return part;
-      }
-    } else {
+    if (fileId == null) {
       return getInsertPartition(partitionPath, recordKey);
     }
+    Integer part = updateLocationToBucket.get(fileId);
+    if (part == null) {
+      throw new IllegalStateException(
+          "No bucket assigned for fileId=" + fileId + " (recordKey=" + recordKey + ", partitionPath=" + partitionPath
+              + "). Bucket map: " + updateLocationToBucket);
+    }
+    return part;
   }
 
   public BucketInfo getBucketInfo(int partition) {

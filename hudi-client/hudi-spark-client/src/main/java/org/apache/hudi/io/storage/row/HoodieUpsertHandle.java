@@ -56,6 +56,12 @@ import org.apache.spark.unsafe.types.UTF8String;
  */
 public class HoodieUpsertHandle extends HoodieRowCreateHandle {
 
+  // Routing columns added by prepareForUpsert. Live on the enriched DataFrame between
+  // the Spark SQL writer and the dsv2 DataWriter; never part of user data or table schema.
+  public static final String FILE_ID_COL = "file_id";
+  public static final String PARTITION_ID_COL = "partition_id";
+  public static final String FILE_ID_PFX_NEW_COL = "file_id_pfx_new";
+
   // Tracking columns added by prepareForUpsert — not part of user data
   private static final Set<String> NON_DATA_COLS = new HashSet<>(Arrays.asList(
       HoodieRecord.COMMIT_TIME_METADATA_FIELD,
@@ -63,7 +69,7 @@ public class HoodieUpsertHandle extends HoodieRowCreateHandle {
       HoodieRecord.RECORD_KEY_METADATA_FIELD,
       HoodieRecord.PARTITION_PATH_METADATA_FIELD,
       HoodieRecord.FILENAME_METADATA_FIELD,
-      "file_id", "partition_id", "file_id_pfx_new"
+      FILE_ID_COL, PARTITION_ID_COL, FILE_ID_PFX_NEW_COL
   ));
 
   private final StructType inputStructType;
