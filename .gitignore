@@ -97,5 +97,12 @@ hudi-spark-datasource/hudi-spark/src/test/resources/upgrade-downgrade-fixtures/s
 #######################################
 # AI Tools
 #######################################
-.claude
+CLAUDE.md
+.claude/*
+!.claude/skills/
 .codex
+
+#######################################
+# Python virtual environments
+#######################################
+.venv/
