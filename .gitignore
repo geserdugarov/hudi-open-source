@@ -102,3 +102,8 @@ CLAUDE.md
 # Python virtual environments
 #######################################
 .venv/
+
+#######################################
+# Local environment configuration
+#######################################
+.env
