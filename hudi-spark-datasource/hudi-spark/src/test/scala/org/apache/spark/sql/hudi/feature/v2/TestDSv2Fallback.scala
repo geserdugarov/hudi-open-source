@@ -131,6 +131,87 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
     }
   }
 
+  test("Test SQL INSERT with use.v2 on reaches the V1 write command") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      createCowTable(tableName, s"${tmp.getCanonicalPath}/$tableName")
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // The per-version DataSourceV2ToV1Fallback rule must intercept InsertIntoStatement
+        // (mind the per-Spark-version pattern arities) and convert the target back to V1 so
+        // the Hudi command rewrite fires. Without it the statement would stay on the DSv2
+        // write plans (AppendData against HoodieSparkV2Table) and skip the Hudi SQL writer.
+        val insertPlan = explainPlan(s"INSERT INTO $tableName VALUES (1, 'a1', 10.0, 1000)")
+        assert(insertPlan.contains("InsertIntoHoodieTableCommand"),
+          s"INSERT INTO with use.v2=true must reach InsertIntoHoodieTableCommand, got:\n$insertPlan")
+        assert(!insertPlan.contains("AppendData") && !insertPlan.contains("WriteToDataSourceV2"),
+          s"INSERT INTO with use.v2=true must not stay on the DSv2 write path, got:\n$insertPlan")
+
+        spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 10.0, 1000), (2, 'a2', 20.0, 2000)")
+
+        val overwritePlan = explainPlan(s"INSERT OVERWRITE TABLE $tableName VALUES (3, 'a3', 30.0, 3000)")
+        assert(overwritePlan.contains("InsertIntoHoodieTableCommand"),
+          s"INSERT OVERWRITE with use.v2=true must reach InsertIntoHoodieTableCommand, got:\n$overwritePlan")
+        spark.sql(s"INSERT OVERWRITE TABLE $tableName VALUES (3, 'a3', 30.0, 3000)")
+
+        // Reads stay on the DSv2 path in the same session where writes fall back to V1.
+        val readPlan = explainPlan(s"SELECT * FROM $tableName")
+        assert(containsBatchScan(readPlan),
+          s"SELECT must stay on the DSv2 read path after V1-fallback inserts, got:\n$readPlan")
+      }
+
+      // Row contents are checked on the V1 read path (the DSv2 scan is still the empty
+      // skeleton): the overwrite must have replaced both appended rows.
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, amount FROM $tableName")(
+        Seq(3, "a3", 30.0)
+      )
+    }
+  }
+
+  test("Test INSERT OVERWRITE PARTITION with use.v2 on reaches the V1 write command") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val tablePath = s"${tmp.getCanonicalPath}/$tableName"
+      spark.sql(
+        s"""CREATE TABLE $tableName (
+           |  id INT,
+           |  name STRING,
+           |  ts LONG,
+           |  country STRING
+           |) USING hudi
+           |TBLPROPERTIES (
+           |  type = 'cow',
+           |  primaryKey = 'id',
+           |  preCombineField = 'ts'
+           |)
+           |PARTITIONED BY (country)
+           |LOCATION '$tablePath'
+           """.stripMargin)
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 1000, 'US'), (2, 'a2', 1000, 'UK')")
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // HoodieSparkV2Table does not advertise OVERWRITE_BY_FILTER, so without the
+        // InsertIntoStatement interception Spark's V2 planner would reject this statement
+        // outright instead of routing it to the V1 writer.
+        val plan = explainPlan(s"INSERT OVERWRITE TABLE $tableName PARTITION (country = 'US') VALUES (3, 'a3', 2000)")
+        assert(plan.contains("InsertIntoHoodieTableCommand"),
+          s"INSERT OVERWRITE PARTITION with use.v2=true must reach InsertIntoHoodieTableCommand, got:\n$plan")
+
+        spark.sql(s"INSERT OVERWRITE TABLE $tableName PARTITION (country = 'US') VALUES (3, 'a3', 2000)")
+      }
+
+      // Only the US partition is replaced; the UK partition must be preserved.
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, country FROM $tableName ORDER BY id")(
+        Seq(2, "a2", "UK"),
+        Seq(3, "a3", "US")
+      )
+    }
+  }
+
   test("Test schema-on-read takes precedence over use.v2") {
     withTempDir { tmp =>
       val tableName = generateTableName
