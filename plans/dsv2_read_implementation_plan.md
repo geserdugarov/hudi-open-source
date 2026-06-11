@@ -288,6 +288,54 @@ demands it (verify first — master may have diverged):
 - `hudi-client/hudi-spark-client/.../SpaceCurveSortingHelper.java` — `row.toSeq().toList()`;
 - `hudi-client/hudi-spark-client/.../BulkInsertDataInternalWriterHelper.java` — both conversions.
 
+**Verified 2026-06-11: none of these fixes are needed on this branch.** The four call sites
+above compile unchanged under Scala 2.13 — `JavaScalaConverters` is compiled per Scala version, so
+its `Seq[A]` returns resolve to `scala.collection.immutable.Seq` under 2.13, matching what the
+Spark 4 APIs expect.
+
+Verification commands (per `AGENTS.md`: JDK 17 for Spark 4 profiles, local repo, SSL/retry
+flags; `${MAVEN_REPO_PATH}` and the JDK paths come from `./.env`). The Spark 4.2 build + test
+invocation, run from the repository root:
+
+```bash
+JAVA_HOME=${JAVA17_HOME_PATH} mvn clean install -Punit-tests \
+  -pl hudi-spark-datasource/hudi-spark -am \
+  -Dspark4.2 -Djava17 -Djava.version=17 \
+  -Dtest=skipJavaTests -Dsurefire.failIfNoSpecifiedTests=false \
+  -DwildcardSuites=org.apache.spark.sql.hudi.feature.v2,org.apache.spark.sql.hudi.catalog.TestHoodieInternalV2TableWriteFallback \
+  -Dmaven.repo.local=${MAVEN_REPO_PATH} \
+  -Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true \
+  -Dmaven.wagon.httpconnectionManager.ttlSeconds=25 -Dmaven.wagon.http.retryHandler.count=5
+```
+
+with `mvn clean compile -DskipTests` variants of the same command line for `-Dspark4.0` and
+`-Dspark4.1`. Recorded results:
+
+- `-Dspark4.2` (Scala 2.13.18, Spark 4.2.0-preview4): full 18-module reactor through
+  `hudi-spark_2.13` (incl. `hudi-spark-client` and `hudi-spark4.2.x_2.13`, main + test sources)
+  builds clean; scalatest summary
+  `Tests: succeeded 30, failed 0, canceled 1, ignored 0, pending 0` — the one canceled test is
+  the Lance fallback case, which self-cancels via its `lance.skip.tests` assume-guard (the 4.2
+  profile sets it to `true`).
+- `-Dspark4.0` / `-Dspark4.1`: both compile clean, confirming the per-version pattern arities
+  (`DataSourceV2Relation`: 5 fields on 4.0, 6 on 4.1/4.2; `InsertIntoStatement`: 7 fields on
+  4.0/4.1, 9 on 4.2).
+- `-Dspark3.5` (JDK 11, `-Djava11 -Djava.version=11 -Dflink1.20`), same suites:
+  `Tests: succeeded 31, failed 0, canceled 0, ignored 0, pending 0` (Lance runs and passes).
+- The SQL INSERT → V1-command routing that the per-version `InsertIntoStatement` matchers
+  implement is pinned by committed regression tests in `TestDSv2Fallback`
+  ("SQL INSERT with use.v2 on reaches the V1 write command",
+  "INSERT OVERWRITE PARTITION with use.v2 on reaches the V1 write command"), so every CI profile
+  build re-verifies it.
+
+Trap observed while verifying: building with `-pl` (no `-am`) resolves the **unsuffixed** hudi
+`1.3.0-SNAPSHOT` jars (`hudi-spark-client`, `hudi-common`, …) from the shared local repo, and a
+concurrent build from another worktree under a different profile can overwrite them with
+2.12-built jars. javac then fails with exactly the POC-looking signatures
+(`scala.collection.Seq` vs `scala.collection.immutable.Seq`, `cannot access scala.Serializable`)
+even though the sources are fine. Always reverify with a self-contained `-am` reactor before
+concluding the §4.4 fixes are needed.
+
 Two further POC side-fixes to evaluate (they fix latent issues exposed by DSv2 tests, not DSv2
 itself): `FileFormatUtilsForFileGroupReader.toRef` wrapping refs in
 `GetArrayItem(CreateArray(...))` to stop Spark re-deriving Parquet pushed filters from required
@@ -413,7 +461,8 @@ Differences between the POC base and this branch that change the implementation:
    directly with `override def isPartiallyPushed: Boolean = true`. No 3.3 adapter/analysis edits.
 2. **Spark 4.2 is new.** Replicate the 4.1 adapter/analysis changes in
    `hudi-spark4.2.x` (`Spark4_2Adapter.resolveHoodieTable`/`isHoodieTable`,
-   `HoodieSpark42DataSourceV2ToV1Fallback`).
+   `HoodieSpark42DataSourceV2ToV1Fallback`). *(Done; compile-verified for 4.0/4.1/4.2 and
+   test-verified under `-Dspark4.2` — see §4.4.)*
 3. **Lance base files exist on this branch.** No gate change needed (the Parquet-only check already
    excludes them), but add a fallback test for a Lance-base-format table.
 4. **Import-order checkstyle now errors** (`65562af43371`): new files must follow the enforced
@@ -426,8 +475,8 @@ Differences between the POC base and this branch that change the implementation:
    Re-verify `HoodieBackedTableMetadata.getColumnStats` and
    `HoodieColumnRangeMetadata.fromColumnStats` signatures, and the 126 intervening commits for
    refactors (e.g. the record-key extraction unification `cb14ca727583`, Lombok refactors).
-6. **Scala-collection compile fixes** (§4.4): verify which are still needed; apply as a standalone
-   prerequisite commit.
+6. **Scala-collection compile fixes** (§4.4): verified — none are needed on this branch
+   (see the verification note in §4.4).
 
 ---
 
