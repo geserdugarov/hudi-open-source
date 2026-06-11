@@ -18,21 +18,22 @@
 package org.apache.spark.sql.hudi.feature.v2
 
 import org.apache.hudi.{DataSourceReadOptions, DefaultSparkRecordMerger}
-import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
+import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 
-import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.{AnalysisException, SaveMode}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase
 
+import java.io.File
+
 /**
  * SQL/catalog fallback matrix for the DSv2 read opt-in (`hoodie.datasource.read.use.v2`):
- * supported queries must resolve to a DSv2 `BatchScan`, while everything the gate
+ * supported queries must resolve to a DSv2 `BatchScan` and return the same rows as V1,
+ * while everything the gate
  * ([[org.apache.spark.sql.hudi.v2.HoodieV2ReadSupport.isSupportedByDSv2]]) rejects must
  * silently stay on the V1 read path with semantics identical to the flag being off.
- *
- * The DSv2 scan is still the empty skeleton, so DSv2-routed cases assert plan shape only
- * (`BatchScan` in EXPLAIN); V1-fallback cases additionally assert row contents.
  */
 class TestDSv2Fallback extends HoodieSparkSqlTestBase {
 
@@ -93,6 +94,7 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
         spark.catalog.refreshTable(tableName)
         val plan = explainPlan(s"SELECT * FROM $tableName")
         assert(containsBatchScan(plan), s"COW snapshot with use.v2=true should use BatchScan, got:\n$plan")
+        checkAnswer(s"SELECT id, name, amount FROM $tableName")(Seq(1, "a1", 10.0))
       }
 
       // Back to V1 once the flag is unset; semantics unchanged.
@@ -128,6 +130,7 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
       val plan = explainPlan(s"SELECT * FROM $tableName")
       assert(containsBatchScan(plan),
         s"use.v2=true in TBLPROPERTIES should route the SQL read to BatchScan, got:\n$plan")
+      checkAnswer(s"SELECT id, name FROM $tableName")(Seq(1, "a1"))
     }
   }
 
@@ -507,6 +510,7 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
         val plan = explainPlan(s"SELECT * FROM $tableName")
         assert(containsBatchScan(plan),
           s"MOR read_optimized via SQL conf should route to BatchScan, got:\n$plan")
+        checkAnswer(s"SELECT id, name FROM $tableName")(Seq(1, "a1"))
       }
     }
   }
@@ -648,6 +652,58 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
         val plan = explainPlan(s"SELECT * FROM $tableName")
         assert(!containsBatchScan(plan),
           s"Non-Parquet (Lance) base format must silently fall back to V1, got:\n$plan")
+        checkAnswer(s"SELECT id, name FROM $tableName ORDER BY id")(
+          Seq(1, "a1"),
+          Seq(2, "a2")
+        )
+      }
+    }
+  }
+
+  test("Test multiple base file formats table read silently falls back to V1") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val tablePath = s"${tmp.getCanonicalPath}/$tableName"
+      val _spark = spark
+      import _spark.implicits._
+
+      val writeOpts = Map(
+        "hoodie.table.name" -> tableName,
+        "hoodie.datasource.write.recordkey.field" -> "id",
+        "hoodie.datasource.write.precombine.field" -> "ts",
+        "hoodie.datasource.write.partitionpath.field" -> "country",
+        HoodieTableConfig.MULTIPLE_BASE_FILE_FORMATS_ENABLE.key -> "true")
+
+      // A genuinely mixed table: Parquet base files in one partition, ORC in another.
+      Seq((1, "a1", 1000L, "US")).toDF("id", "name", "ts", "country")
+        .write.format("hudi").options(writeOpts)
+        .mode(SaveMode.Overwrite).save(tablePath)
+      Seq((2, "a2", 2000L, "UK")).toDF("id", "name", "ts", "country")
+        .write.format("hudi").options(writeOpts)
+        .option("hoodie.base.file.format", "ORC")
+        .mode(SaveMode.Append).save(tablePath)
+
+      def dataFiles(dir: File): Seq[String] = {
+        val children = Option(dir.listFiles()).map(_.toSeq).getOrElse(Seq.empty)
+          .filterNot(_.getName.startsWith("."))
+        children.flatMap(f => if (f.isDirectory) dataFiles(f) else Seq(f.getName))
+      }
+      val baseFileNames = dataFiles(new File(tablePath))
+      assert(baseFileNames.exists(_.endsWith(".parquet")) && baseFileNames.exists(_.endsWith(".orc")),
+        s"expected both Parquet and ORC base files on storage, got: $baseFileNames")
+
+      // The DataFrame path must fail explicitly: the scan hard-codes the Parquet reader.
+      intercept[HoodieException] {
+        spark.read.format("hudi_v2").load(tablePath).collect()
+      }
+
+      spark.sql(s"CREATE TABLE $tableName USING hudi LOCATION '$tablePath'")
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        val plan = explainPlan(s"SELECT * FROM $tableName")
+        assert(!containsBatchScan(plan) && containsFileScan(plan),
+          s"Multiple base file formats must silently fall back to a V1 FileScan, got:\n$plan")
+        // The fallback must read rows from both formats.
         checkAnswer(s"SELECT id, name FROM $tableName ORDER BY id")(
           Seq(1, "a1"),
           Seq(2, "a2")
