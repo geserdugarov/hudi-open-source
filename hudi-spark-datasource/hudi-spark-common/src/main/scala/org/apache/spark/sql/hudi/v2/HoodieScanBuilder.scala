@@ -17,17 +17,29 @@
 
 package org.apache.spark.sql.hudi.v2
 
-import org.apache.hudi.{DataSourceReadOptions, HoodieDataSourceHelper, HoodieFileIndex, SparkAdapterSupport}
+import org.apache.hudi.{DataSourceReadOptions, HoodieBaseRelation, HoodieDataSourceHelper, HoodieFileIndex, SparkAdapterSupport}
+import org.apache.hudi.client.utils.SparkInternalSchemaConverter
 import org.apache.hudi.common.model.HoodieTableType.COPY_ON_WRITE
-import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.schema.HoodieSchema
+import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.util.{Option => HOption}
 import org.apache.hudi.config.HoodieBootstrapConfig
+import org.apache.hudi.internal.schema.InternalSchema
+import org.apache.hudi.internal.schema.utils.SerDeHelper
+import org.apache.hudi.io.storage.HoodieSparkParquetReader.ENABLE_LOGICAL_TIMESTAMP_REPAIR
 import org.apache.hudi.util.SparkConfigUtils
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.parquet.schema.HoodieSchemaRepair
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.connector.read.{InputPartition, Scan, ScanBuilder, SupportsPushDownRequiredColumns}
 import org.apache.spark.sql.execution.datasources.FileFormat
+import org.apache.spark.sql.hudi.HoodieSqlCommonUtils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
+import org.slf4j.LoggerFactory
+
+import scala.collection.JavaConverters._
 
 /**
  * Scan builder for DSv2 snapshot reads of base files (COW snapshot and MOR
@@ -43,7 +55,16 @@ class HoodieScanBuilder(spark: SparkSession,
   with SupportsPushDownRequiredColumns
   with SparkAdapterSupport {
 
+  private val log = LoggerFactory.getLogger(getClass)
+
   private var requiredSchema: StructType = tableSchema
+
+  // Mirror DSv1 (HoodieBaseHadoopFsRelationFactory.specifiedQueryTimestamp): a time-travel
+  // read resolves schemas as of this instant; HoodieFileIndex picks the same option up from
+  // the options map and scopes file slices to it.
+  private lazy val specifiedQueryInstant: Option[String] =
+    options.get(DataSourceReadOptions.TIME_TRAVEL_AS_OF_INSTANT.key)
+      .map(HoodieSqlCommonUtils.formatQueryInstant)
 
   override def pruneColumns(requiredSchema: StructType): Unit = {
     this.requiredSchema = requiredSchema
@@ -114,6 +135,16 @@ class HoodieScanBuilder(spark: SparkSession,
     }
 
     val hadoopConf = spark.sessionState.newHadoopConf()
+    val internalSchemaOpt = fetchInternalSchema()
+    embedInternalSchema(hadoopConf, internalSchemaOpt)
+    val tableAvroSchema = fetchTableAvroSchema()
+    if (tableAvroSchema.isPresent) {
+      // Mirror DSv1 (HoodieFileGroupReaderBasedFileFormat): skip the per-file footer repair
+      // when no timestamp-millis field exists; the flag must be set before the reader is
+      // built because SparkXXParquetReader.build reads it from the hadoop conf.
+      hadoopConf.set(ENABLE_LOGICAL_TIMESTAMP_REPAIR,
+        HoodieSchemaRepair.hasTimestampMillisField(tableAvroSchema.get).toString)
+    }
     // Row mode: HoodiePartitionReader is a PartitionReader[InternalRow], so the columnar
     // reader must not hand back ColumnarBatches.
     val readerOptions = options + (FileFormat.OPTION_RETURNING_BATCH -> "false")
@@ -151,6 +182,70 @@ class HoodieScanBuilder(spark: SparkSession,
       broadcastReader,
       broadcastConf,
       requiredDataSchema,
-      requiredPartitionSchema)
+      requiredPartitionSchema,
+      internalSchemaOpt,
+      tableAvroSchema)
+  }
+
+  /**
+   * Mirror DSv1 (HoodieBaseHadoopFsRelationFactory): fetch the internal schema from commit
+   * metadata only when schema-on-read evolution is enabled (option or session conf), as of
+   * the time-travel instant when one is supplied so evolved column IDs/types match the
+   * snapshot being read. Resolution failures degrade to a plain read, as in DSv1.
+   */
+  private def fetchInternalSchema(): HOption[InternalSchema] = {
+    if (!HoodieBaseRelation.isSchemaEvolutionEnabledOnRead(options, spark)) {
+      HOption.empty[InternalSchema]()
+    } else {
+      try {
+        val schemaResolver = new TableSchemaResolver(metaClient)
+        specifiedQueryInstant match {
+          case Some(ts) => schemaResolver.getTableInternalSchemaFromCommitMetadata(ts)
+          case None => schemaResolver.getTableInternalSchemaFromCommitMetadata
+        }
+      } catch {
+        case e: Exception =>
+          log.warn("Failed to fetch internal schema from commit metadata; reading without schema-on-read evolution", e)
+          HOption.empty[InternalSchema]()
+      }
+    }
+  }
+
+  /**
+   * Embeds the schema-on-read context into the hadoop conf the executors read with:
+   * ParquetSchemaEvolutionUtils resolves each base file's writer schema by commit time via
+   * InternalSchemaCache, which requires the table path and the completed-instant file names
+   * (and legacy readers take the query schema itself) from the conf.
+   */
+  private def embedInternalSchema(conf: Configuration, internalSchemaOpt: HOption[InternalSchema]): Unit = {
+    if (internalSchemaOpt.isPresent) {
+      val fileNameGenerator = metaClient.getInstantFileNameGenerator
+      val validCommits = metaClient.getCommitsAndCompactionTimeline.filterCompletedInstants
+        .getInstants.iterator.asScala.map(fileNameGenerator.getFileName).mkString(",")
+      conf.set(SparkInternalSchemaConverter.HOODIE_QUERY_SCHEMA, SerDeHelper.toJson(internalSchemaOpt.get))
+      conf.set(SparkInternalSchemaConverter.HOODIE_TABLE_PATH, metaClient.getBasePath.toString)
+      conf.set(SparkInternalSchemaConverter.HOODIE_VALID_COMMITS_LIST, validCommits)
+    }
+  }
+
+  /**
+   * Mirror DSv1 (HoodieFileGroupReaderBasedFileFormat.tableSchemaAsMessageType): resolve the
+   * table Avro schema — as of the time-travel instant when one is supplied — for the Parquet
+   * footer logical-type repair in the reader. Failures degrade to no repair rather than
+   * failing the scan.
+   */
+  private def fetchTableAvroSchema(): HOption[HoodieSchema] = {
+    try {
+      val schemaResolver = new TableSchemaResolver(metaClient)
+      val schema = specifiedQueryInstant match {
+        case Some(ts) => schemaResolver.getTableSchema(ts)
+        case None => schemaResolver.getTableSchema
+      }
+      HOption.ofNullable(schema)
+    } catch {
+      case e: Exception =>
+        log.warn("Failed to fetch table schema for Parquet logical-type repair", e)
+        HOption.empty[HoodieSchema]()
+    }
   }
 }

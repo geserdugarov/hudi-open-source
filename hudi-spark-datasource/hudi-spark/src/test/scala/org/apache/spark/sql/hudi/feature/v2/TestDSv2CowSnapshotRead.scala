@@ -19,6 +19,7 @@ package org.apache.spark.sql.hudi.feature.v2
 
 import org.apache.hudi.DataSourceReadOptions
 import org.apache.hudi.common.config.TimestampKeyGeneratorConfig.{TIMESTAMP_OUTPUT_DATE_FORMAT, TIMESTAMP_TYPE_FIELD}
+import org.apache.hudi.testutils.HoodieClientTestUtils.createMetaClient
 
 import org.apache.spark.sql.{DataFrame, Row, SaveMode}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -355,6 +356,79 @@ class TestDSv2CowSnapshotRead extends HoodieSparkSqlTestBase {
           .collect()
       }
       assert(e.getMessage.contains("extractPartitionValuesFromPartitionPath"))
+    }
+  }
+
+  test("Test hudi_v2 time travel reads the snapshot as of the instant") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val path = s"${tmp.getCanonicalPath}/$tableName"
+      writeTable(path, tableName, Seq((1, "a1", 10.0, 1000L), (2, "a2", 20.0, 1000L)))
+      val firstInstant = createMetaClient(spark, path).getActiveTimeline
+        .getAllCommitsTimeline.lastInstant().get().requestedTime
+      // Second commit: update id=1 and insert id=3 — both must be invisible as of instant 1.
+      writeTable(path, tableName, Seq((1, "a1_new", 15.0, 2000L), (3, "a3", 30.0, 2000L)), mode = SaveMode.Append)
+
+      val asOfKey = DataSourceReadOptions.TIME_TRAVEL_AS_OF_INSTANT.key
+      val asOfDf = spark.read.format("hudi_v2").option(asOfKey, firstInstant).load(path)
+      assertBatchScan(asOfDf)
+      checkAnswer(asOfDf.select("id", "name", "price").orderBy("id").collect())(
+        Seq(1, "a1", 10.0),
+        Seq(2, "a2", 20.0)
+      )
+
+      // A plain read of the same table still sees the latest snapshot.
+      val latestDf = spark.read.format("hudi_v2").load(path)
+      checkAnswer(latestDf.select("id", "name", "price").orderBy("id").collect())(
+        Seq(1, "a1_new", 15.0),
+        Seq(2, "a2", 20.0),
+        Seq(3, "a3", 30.0)
+      )
+
+      val v1AsOfDf = spark.read.format("hudi").option(asOfKey, firstInstant).load(path)
+        .select("id", "name", "price")
+      assertResult(sortedRows(v1AsOfDf))(sortedRows(asOfDf.select("id", "name", "price")))
+    }
+  }
+
+  test("Test hudi_v2 time travel reads timestamp columns identically to DSv1") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val path = s"${tmp.getCanonicalPath}/$tableName"
+      val _spark = spark
+      import _spark.implicits._
+      // A TimestampType column makes the scan resolve the table Avro schema and hand the
+      // converted Parquet MessageType to the reader for logical-type repair; for files
+      // written by Spark (timestamp-micros) the repair is a no-op and values must
+      // round-trip unchanged.
+      def write(rows: Seq[(Int, String, java.sql.Timestamp, Long)], mode: SaveMode): Unit = {
+        rows.toDF("id", "name", "event_time", "ts")
+          .write.format("hudi")
+          .option("hoodie.table.name", tableName)
+          .option("hoodie.datasource.write.recordkey.field", "id")
+          .option("hoodie.datasource.write.precombine.field", "ts")
+          .mode(mode)
+          .save(path)
+      }
+      write(Seq(
+        (1, "a1", java.sql.Timestamp.valueOf("2024-01-01 01:02:03"), 1000L),
+        (2, "a2", java.sql.Timestamp.valueOf("2024-06-30 23:59:59"), 1000L)), SaveMode.Overwrite)
+      val firstInstant = createMetaClient(spark, path).getActiveTimeline
+        .getAllCommitsTimeline.lastInstant().get().requestedTime
+      write(Seq((1, "a1_new", java.sql.Timestamp.valueOf("2025-02-02 02:03:04"), 2000L)), SaveMode.Append)
+
+      val asOfKey = DataSourceReadOptions.TIME_TRAVEL_AS_OF_INSTANT.key
+      val v2Df = spark.read.format("hudi_v2").option(asOfKey, firstInstant).load(path)
+        .select("id", "name", "event_time")
+      assertBatchScan(v2Df)
+      checkAnswer(v2Df.orderBy("id").collect())(
+        Seq(1, "a1", java.sql.Timestamp.valueOf("2024-01-01 01:02:03")),
+        Seq(2, "a2", java.sql.Timestamp.valueOf("2024-06-30 23:59:59"))
+      )
+
+      val v1Df = spark.read.format("hudi").option(asOfKey, firstInstant).load(path)
+        .select("id", "name", "event_time")
+      assertResult(sortedRows(v1Df))(sortedRows(v2Df))
     }
   }
 

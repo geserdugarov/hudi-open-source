@@ -18,11 +18,15 @@
 package org.apache.spark.sql.hudi.v2
 
 import org.apache.hudi.SparkAdapterSupport
+import org.apache.hudi.common.schema.HoodieSchema
+import org.apache.hudi.common.table.ParquetTableSchemaResolver
 import org.apache.hudi.common.util.{Option => HOption}
 import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.parquet.schema.MessageType
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.HoodieCatalystExpressionUtils
 import org.apache.spark.sql.catalyst.InternalRow
@@ -35,14 +39,18 @@ import java.io.Closeable
 
 /**
  * Partition reader that reads its assigned byte range of a single base (Parquet) file
- * using [[SparkColumnarFileReader]] in row mode.
+ * using [[SparkColumnarFileReader]] in row mode, honoring the internal schema
+ * (schema-on-read evolution) and the table Avro schema (logical-type repair) resolved
+ * by [[HoodieScanBuilder]].
  */
 class HoodiePartitionReader(partition: HoodieInputPartition,
                             broadcastReader: Broadcast[SparkColumnarFileReader],
                             broadcastConf: Broadcast[SerializableConfiguration],
                             readSchema: StructType,
                             requiredDataSchema: StructType,
-                            requiredPartitionSchema: StructType)
+                            requiredPartitionSchema: StructType,
+                            internalSchemaOpt: HOption[InternalSchema],
+                            tableAvroSchema: HOption[HoodieSchema])
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val (rawIter, projectedIter): (Iterator[InternalRow], Iterator[InternalRow]) = createIterators()
@@ -74,9 +82,20 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
         partition.start, partition.length)
 
     val storageConf = new HadoopStorageConfiguration(broadcastConf.value.value)
+    // Mirror DSv1 (HoodieFileGroupReaderBasedFileFormat.tableSchemaAsMessageType): convert
+    // the table Avro schema to a Parquet MessageType so the reader can repair logical
+    // timestamp annotations (timestamp-millis) that older base files lost — without it
+    // those columns surface as their physical long value. The fresh Configuration matches
+    // DSv1's conversion context.
+    val tableSchemaOpt: HOption[MessageType] = if (tableAvroSchema.isPresent) {
+      HOption.ofNullable(
+        ParquetTableSchemaResolver.convertAvroSchemaToParquet(tableAvroSchema.get(), new Configuration()))
+    } else {
+      HOption.empty[MessageType]()
+    }
     val rawIter = broadcastReader.value.read(
       pFile, requiredDataSchema, requiredPartitionSchema,
-      HOption.empty[InternalSchema](), Seq.empty, storageConf)
+      internalSchemaOpt, Seq.empty, storageConf, tableSchemaOpt)
 
     // The reader emits requiredDataSchema columns with requiredPartitionSchema values
     // appended at the end; realign to readSchema when the two layouts differ (e.g. a
