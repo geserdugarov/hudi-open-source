@@ -21,6 +21,8 @@ import org.apache.hudi.{DataSourceReadOptions, DefaultSparkRecordMerger}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 
+import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase
 
 /**
@@ -228,6 +230,135 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
         Seq(1, "a1_new", 12.0),
         Seq(2, "a2", 20.0),
         Seq(4, "a4", 40.0)
+      )
+    }
+  }
+
+  test("Test INSERT INTO with use.v2 on routes through the Hudi V1 write command") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      createCowTable(tableName, s"${tmp.getCanonicalPath}/$tableName")
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 10.0, 1000)")
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // The per-version fallback rule must convert the InsertIntoStatement target from
+        // DataSourceV2Relation(HoodieSparkV2Table) to a V1 LogicalRelation so that Hudi's
+        // analysis rewrites it into InsertIntoHoodieTableCommand instead of letting it
+        // flow through Spark's V2 write planning.
+        val insertPlan = explainPlan(s"INSERT INTO $tableName VALUES (2, 'a2', 20.0, 2000)")
+        assert(insertPlan.contains("InsertIntoHoodieTableCommand"),
+          s"INSERT INTO with use.v2=true must route through InsertIntoHoodieTableCommand, got:\n$insertPlan")
+
+        spark.sql(s"INSERT INTO $tableName VALUES (2, 'a2', 20.0, 2000)")
+
+        // The write interception must not knock SELECTs off the DSv2 read path.
+        val readPlan = explainPlan(s"SELECT * FROM $tableName")
+        assert(containsBatchScan(readPlan),
+          s"SELECT must stay on the DSv2 read path after an INSERT, got:\n$readPlan")
+      }
+
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, amount FROM $tableName ORDER BY id")(
+        Seq(1, "a1", 10.0),
+        Seq(2, "a2", 20.0)
+      )
+    }
+  }
+
+  test("Test INSERT OVERWRITE non-partitioned table with use.v2 on") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      createCowTable(tableName, s"${tmp.getCanonicalPath}/$tableName")
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 10.0, 1000), (2, 'a2', 20.0, 2000)")
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // Non-partitioned tables always overwrite the whole table.
+        spark.sql(s"INSERT OVERWRITE TABLE $tableName VALUES (3, 'a3', 30.0, 3000)")
+      }
+
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, amount FROM $tableName ORDER BY id")(
+        Seq(3, "a3", 30.0)
+      )
+    }
+  }
+
+  test("Test INSERT OVERWRITE partitioned table with use.v2 on") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val tablePath = s"${tmp.getCanonicalPath}/$tableName"
+      spark.sql(
+        s"""CREATE TABLE $tableName (
+           |  id INT,
+           |  name STRING,
+           |  ts LONG,
+           |  country STRING
+           |) USING hudi
+           |TBLPROPERTIES (
+           |  type = 'cow',
+           |  primaryKey = 'id',
+           |  preCombineField = 'ts'
+           |)
+           |PARTITIONED BY (country)
+           |LOCATION '$tablePath'
+           """.stripMargin)
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 1000, 'US'), (2, 'a2', 2000, 'UK')")
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // HoodieSparkV2Table does not advertise OVERWRITE_BY_FILTER, so without the
+        // InsertIntoStatement interception in the fallback rule Spark's V2 planner would
+        // reject the static partition overwrite outright. With it, only the targeted
+        // partition is replaced.
+        spark.sql(s"INSERT OVERWRITE TABLE $tableName PARTITION (country='US') VALUES (3, 'a3', 3000)")
+        // The V1 DataFrame read path bypasses the catalog and the use.v2 flag, so it can
+        // verify the intermediate state while the conf is still on.
+        checkAnswer(spark.read.format("hudi").load(tablePath)
+          .select("id", "name", "country").orderBy("id").collect())(
+          Seq(2, "a2", "UK"),
+          Seq(3, "a3", "US")
+        )
+
+        // No partition spec + default static partitionOverwriteMode: whole table replaced.
+        spark.sql(s"INSERT OVERWRITE TABLE $tableName VALUES (4, 'a4', 4000, 'FR')")
+      }
+
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, country FROM $tableName ORDER BY id")(
+        Seq(4, "a4", "FR")
+      )
+    }
+  }
+
+  test("Test writeTo overwrite by filter is rejected with use.v2 on") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      createCowTable(tableName, s"${tmp.getCanonicalPath}/$tableName")
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 10.0, 1000)")
+      val _spark = spark
+      import _spark.implicits._
+
+      withSQLConf(useV2Key -> "true") {
+        spark.catalog.refreshTable(tableName)
+        // The V1 write fallback rewrites whole partitions and cannot honor arbitrary
+        // filter expressions, so HoodieSparkV2Table does not advertise
+        // OVERWRITE_BY_FILTER and the fallback rule only intercepts InsertIntoStatement.
+        // OverwriteByExpression must therefore fail Spark's capability check instead of
+        // being silently widened to a partition overwrite.
+        val df = Seq((9, "a9", 90.0, 9000L)).toDF("id", "name", "amount", "ts")
+        val e = intercept[AnalysisException] {
+          df.writeTo(tableName).overwrite(col("id") === 1)
+        }
+        assert(e.getMessage.contains("does not support overwrite by filter"),
+          s"Expected the overwrite-by-filter capability rejection, got: ${e.getMessage}")
+      }
+
+      // The rejected write must not have modified the table.
+      spark.catalog.refreshTable(tableName)
+      checkAnswer(s"SELECT id, name, amount FROM $tableName ORDER BY id")(
+        Seq(1, "a1", 10.0)
       )
     }
   }
@@ -463,18 +594,27 @@ class TestDSv2Fallback extends HoodieSparkSqlTestBase {
            |PARTITIONED BY (country)
            |LOCATION '$tablePath'
            """.stripMargin)
-      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 1000, 'US'), (2, 'a2', 2000, 'UK')")
+      spark.sql(s"INSERT INTO $tableName VALUES (1, 'a1', 1000, 'US'), (2, 'a2', 2000, 'UK'), (3, 'a3', 3000, 'FR')")
 
       withSQLConf(useV2Key -> "true") {
         spark.catalog.refreshTable(tableName)
         // loadTable now returns HoodieSparkV2Table; the HoodieV1OrV2Table extractor must
         // keep routing partition DDL to the Hudi commands.
         val partitions = spark.sql(s"SHOW PARTITIONS $tableName").collect().map(_.getString(0)).sorted
-        assertResult(Seq("country=UK", "country=US"))(partitions.toSeq)
+        assertResult(Seq("country=FR", "country=UK", "country=US"))(partitions.toSeq)
 
         spark.sql(s"ALTER TABLE $tableName DROP PARTITION (country='UK')")
-        val remaining = spark.sql(s"SHOW PARTITIONS $tableName").collect().map(_.getString(0))
-        assertResult(Seq("country=US"))(remaining.toSeq)
+        val remaining = spark.sql(s"SHOW PARTITIONS $tableName").collect().map(_.getString(0)).sorted
+        assertResult(Seq("country=FR", "country=US"))(remaining.toSeq)
+
+        // TRUNCATE ... PARTITION resolves through the same extractor (TruncatePartition).
+        // The V1 DataFrame read bypasses the catalog and the use.v2 flag, so it can verify
+        // the per-partition truncation while the conf is still on.
+        spark.sql(s"TRUNCATE TABLE $tableName PARTITION (country='FR')")
+        checkAnswer(spark.read.format("hudi").load(tablePath)
+          .select("id", "country").orderBy("id").collect())(
+          Seq(1, "US")
+        )
 
         spark.sql(s"TRUNCATE TABLE $tableName")
       }
