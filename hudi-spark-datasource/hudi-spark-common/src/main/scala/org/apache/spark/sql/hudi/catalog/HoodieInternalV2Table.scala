@@ -17,7 +17,9 @@
 
 package org.apache.spark.sql.hudi.catalog
 
+import org.apache.hudi.{HoodieSchemaConversionUtils, HoodieSparkSqlWriter}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
+import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
 
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
@@ -28,13 +30,13 @@ import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.hudi.ProvidesHoodieConfig
-import org.apache.spark.sql.sources.{Filter, InsertableRelation}
+import org.apache.spark.sql.sources.InsertableRelation
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import java.util
 
-import scala.collection.JavaConverters.{mapAsJavaMapConverter, setAsJavaSetConverter}
+import scala.collection.JavaConverters.{mapAsJavaMapConverter, mapAsScalaMapConverter, setAsJavaSetConverter}
 
 case class HoodieInternalV2Table(spark: SparkSession,
                                  path: String,
@@ -64,7 +66,7 @@ case class HoodieInternalV2Table(spark: SparkSession,
   override def schema(): StructType = tableSchema
 
   override def capabilities(): util.Set[TableCapability] = Set(
-    BATCH_READ, V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE, ACCEPT_ANY_SCHEMA
+    BATCH_READ, V1_BATCH_WRITE, TRUNCATE, ACCEPT_ANY_SCHEMA
   ).asJava
 
   override def properties(): util.Map[String, String] = {
@@ -87,21 +89,15 @@ case class HoodieInternalV2Table(spark: SparkSession,
 
 }
 
-private class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
-                                   hoodieCatalogTable: HoodieCatalogTable,
-                                   spark: SparkSession)
-  extends SupportsTruncate with SupportsOverwrite with ProvidesHoodieConfig {
+private[hudi] class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
+                                         hoodieCatalogTable: HoodieCatalogTable,
+                                         spark: SparkSession)
+  extends SupportsTruncate with ProvidesHoodieConfig {
 
   private var overwriteTable = false
-  private var overwritePartition = false
 
   override def truncate(): HoodieV1WriteBuilder = {
     overwriteTable = true
-    this
-  }
-
-  override def overwrite(filters: Array[Filter]): WriteBuilder = {
-    overwritePartition = true
     this
   }
 
@@ -109,17 +105,78 @@ private class HoodieV1WriteBuilder(writeOptions: CaseInsensitiveStringMap,
     override def toInsertableRelation: InsertableRelation = {
       new InsertableRelation {
         override def insert(data: DataFrame, overwrite: Boolean): Unit = {
-          val mode = if (overwriteTable || overwritePartition) {
+          val mode = if (overwriteTable) {
             SaveMode.Overwrite
           } else {
             SaveMode.Append
           }
 
-          data.write.format("org.apache.hudi")
-            .mode(mode)
-            .options(buildHoodieConfig(hoodieCatalogTable) ++
-              buildHoodieInsertConfig(hoodieCatalogTable, spark, overwritePartition, overwriteTable, Map.empty, Map.empty))
-            .save()
+          // Merge per-write options through the config builder, which keeps table-derived
+          // settings (path, table name, operation, key/partition fields) authoritative
+          // over user-supplied options.
+          val writeOptsMap = writeOptions.asCaseSensitiveMap().asScala.toMap
+          val config = buildHoodieConfig(hoodieCatalogTable) ++
+            buildHoodieInsertConfig(hoodieCatalogTable, spark,
+              isOverwritePartition = false, overwriteTable, Map.empty, writeOptsMap)
+
+          // The V2-to-V1 fallback may receive a DataFrame whose schema is not aligned with
+          // the table's user schema, because ACCEPT_ANY_SCHEMA makes Spark skip its own
+          // output resolution. DataFrameWriterV2 writes are by-name, so when the source
+          // provides the table's column names (possibly reordered or differently cased),
+          // realign by name. Positional alignment is applied only to the generic columns
+          // of a VALUES relation (col1, col2, ...), which also carry uncast literal types
+          // (e.g., DECIMAL literals for DOUBLE columns). Any other same-width schema is
+          // rejected: silently remapping misspelled or wrong columns by position would
+          // write corrupt data.
+          val userSchema = hoodieCatalogTable.tableSchemaWithoutMetaFields
+          val resolver = spark.sessionState.analyzer.resolver
+          val alignedData = if (data.schema == userSchema) {
+            data
+          } else if (data.columns.length == userSchema.length) {
+            val matchesByName = userSchema.fields.forall { tgtField =>
+              data.schema.fields.count(srcField => resolver(srcField.name, tgtField.name)) == 1
+            }
+            val hasGenericValuesColumns = data.schema.fieldNames.zipWithIndex.forall {
+              case (srcName, idx) => resolver(srcName, s"col${idx + 1}")
+            }
+            val columns = if (matchesByName) {
+              userSchema.fields.map { tgtField =>
+                val srcField = data.schema.fields.find(f => resolver(f.name, tgtField.name)).get
+                data.col(srcField.name).cast(tgtField.dataType).as(tgtField.name)
+              }
+            } else if (hasGenericValuesColumns) {
+              data.schema.fields.zip(userSchema.fields).map {
+                case (srcField, tgtField) =>
+                  data.col(srcField.name).cast(tgtField.dataType).as(tgtField.name)
+              }
+            } else {
+              throw new HoodieException(
+                s"Cannot align the incoming write schema [${data.schema.fieldNames.mkString(", ")}] " +
+                  s"with the schema [${userSchema.fieldNames.mkString(", ")}] of table " +
+                  s"${hoodieCatalogTable.tableName}: column names neither match the table columns " +
+                  "nor are generic VALUES-clause columns (col1, col2, ...)")
+            }
+            data.select(columns: _*)
+          } else {
+            data
+          }
+
+          // Pass the catalog schema so the V1 writer can properly reconcile the
+          // incoming schema with the full table schema (including meta-fields).
+          val (structName, namespace) =
+            HoodieSchemaConversionUtils.getRecordNameAndNamespace(hoodieCatalogTable.tableName)
+          val catalogSchema = HoodieSchemaConversionUtils
+            .convertStructTypeToHoodieSchema(hoodieCatalogTable.tableSchema, structName, namespace)
+
+          try {
+            val (success, _, _, _, _, _) = HoodieSparkSqlWriter.write(spark.sqlContext, mode, config, alignedData,
+              schemaFromCatalog = Option(catalogSchema))
+            if (!success) {
+              throw new HoodieException("Failed to write to Hudi")
+            }
+          } finally {
+            HoodieSparkSqlWriter.cleanup()
+          }
         }
       }
     }
