@@ -19,9 +19,9 @@
 
 package org.apache.spark.sql.hudi.catalog
 
-import org.apache.hudi.{DataSourceWriteOptions, SparkAdapterSupport}
+import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions, SparkAdapterSupport}
 import org.apache.hudi.client.common.HoodieSparkEngineContext
-import org.apache.hudi.common.config.HoodieMetadataConfig
+import org.apache.hudi.common.config.{HoodieCommonConfig, HoodieMetadataConfig}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.table.view.FileSystemViewManager
 import org.apache.hudi.common.util.ConfigUtils
@@ -47,6 +47,7 @@ import org.apache.spark.sql.hudi.analysis.HoodieSparkBaseAnalysis.HoodieV1OrV2Ta
 import org.apache.spark.sql.hudi.catalog.HoodieCatalog.{buildPartitionTransforms, isTablePartitioned}
 import org.apache.spark.sql.hudi.command._
 import org.apache.spark.sql.hudi.command.exception.HoodieAnalysisException
+import org.apache.spark.sql.hudi.v2.{HoodieSparkV2Table, HoodieV2ReadSupport}
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import java.net.URI
@@ -139,15 +140,45 @@ class HoodieCatalog extends DelegatingCatalogExtension
 
         val schemaEvolutionEnabled = ProvidesHoodieConfig.isSchemaEvolutionEnabled(spark)
 
-        // NOTE: PLEASE READ CAREFULLY
-        //
-        // Since Hudi relations don't currently implement DS V2 Read API, we by default fallback to V1 here.
-        // Such fallback will have considerable performance impact, therefore it's only performed in cases
-        // where V2 API have to be used. Currently only such use-case is using of Schema Evolution feature
-        //
-        // Check out HUDI-4178 for more details
+        // hoodieCatalogTable construction is cheap; HoodieCatalogTable.metaClient is itself
+        // a lazy val so the filesystem probe only fires when the gate actually consults it.
+        // Skipped entirely when schemaEvolutionEnabled forces the V1 fallback.
+        lazy val hoodieCatalogTable = HoodieCatalogTable(spark, catalogTable)
+        val dsv2Supported = !schemaEvolutionEnabled && {
+          // Resolve read options before the gate so that USE_V2_READ, query.type,
+          // incremental format, etc. coming from SQL confs, spark.hoodie.*,
+          // hudi-defaults.conf, TBLPROPERTIES, and CREATE TABLE OPTIONS are all honored
+          // when deciding V1 vs V2. catalogProperties already merges
+          // table.storage.properties (OPTIONS) and table.properties (TBLPROPERTIES),
+          // matching HoodieSparkV2Table.properties(); scan-time options are layered on
+          // top in HoodieSparkV2Table.newScanBuilder.
+          val resolvedOpts = HoodieV2ReadSupport.resolveReadOptions(spark, hoodieCatalogTable.catalogProperties)
+          val v2ReadEnabled = resolvedOpts.getOrElse(
+            DataSourceReadOptions.USE_V2_READ.key,
+            DataSourceReadOptions.USE_V2_READ.defaultValue).toBoolean
+          // The V1 read path also honors schema-on-read coming from read options / table
+          // properties (HoodieBaseRelation.isSchemaEvolutionEnabledOnRead), not only from
+          // the session conf checked above. A table opting in via TBLPROPERTIES/OPTIONS or
+          // a normalized spark.hoodie.* conf must keep the V1 read path too.
+          val schemaOnReadEnabledByOpts = resolvedOpts.getOrElse(
+            HoodieCommonConfig.SCHEMA_EVOLUTION_ENABLE.key,
+            HoodieCommonConfig.SCHEMA_EVOLUTION_ENABLE.defaultValue.toString).toBoolean
+          !schemaOnReadEnabledByOpts && v2ReadEnabled &&
+            HoodieV2ReadSupport.isSupportedByDSv2(hoodieCatalogTable.metaClient, resolvedOpts)
+        }
+
         if (schemaEvolutionEnabled) {
+          // HoodieInternalV2Table keeps the per-Spark-version ResolveHudiAlterTableCommand
+          // rewrite path working for DROP COLUMN / RENAME COLUMN etc. It does not implement
+          // SupportsRead, so reads fall back to the V1 schema-evolution-aware FileScan via
+          // V2TableWithV1Fallback.
           v2Table
+        } else if (dsv2Supported) {
+          HoodieSparkV2Table(
+            spark = spark,
+            path = catalogTable.location.toString,
+            catalogTable = Some(catalogTable),
+            preResolvedCatalogTable = Some(hoodieCatalogTable))
         } else {
           v2Table.v1TableWrapper
         }
