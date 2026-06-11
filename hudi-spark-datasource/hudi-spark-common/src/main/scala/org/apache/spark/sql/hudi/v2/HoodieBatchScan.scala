@@ -17,18 +17,26 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan}
+import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.SerializableConfiguration
 
 /**
- * Batch scan for snapshot reads via DSv2.
+ * Batch scan for snapshot reads of base files via DSv2 (COW snapshot and MOR
+ * read_optimized).
  *
- * Skeleton: holds pre-planned input partitions (currently always empty) and creates the
- * [[HoodiePartitionReaderFactory]]. Reader broadcasting and statistics reporting land
- * with the COW snapshot read phase.
+ * Holds the input partitions pre-planned by [[HoodieScanBuilder]] together with the
+ * broadcast Parquet reader and hadoop conf the executors read with. Statistics
+ * reporting for CBO lands with the pushdown phase.
  */
 class HoodieBatchScan(outputSchema: StructType,
-                      inputPartitions: Array[InputPartition]) extends Scan with Batch {
+                      inputPartitions: Array[InputPartition],
+                      broadcastReader: Broadcast[SparkColumnarFileReader],
+                      broadcastConf: Broadcast[SerializableConfiguration],
+                      requiredDataSchema: StructType,
+                      requiredPartitionSchema: StructType) extends Scan with Batch {
 
   override def readSchema(): StructType = outputSchema
 
@@ -38,5 +46,12 @@ class HoodieBatchScan(outputSchema: StructType,
 
   override def planInputPartitions(): Array[InputPartition] = inputPartitions
 
-  override def createReaderFactory(): PartitionReaderFactory = new HoodiePartitionReaderFactory()
+  override def createReaderFactory(): PartitionReaderFactory = {
+    new HoodiePartitionReaderFactory(
+      broadcastReader,
+      broadcastConf,
+      outputSchema,
+      requiredDataSchema,
+      requiredPartitionSchema)
+  }
 }

@@ -42,8 +42,8 @@ import scala.collection.JavaConverters.{mapAsJavaMapConverter, mapAsScalaMapConv
 /**
  * DSv2 table implementation for Hudi.
  *
- * Read path: routes to [[HoodieScanBuilder]] (currently a skeleton planning no input
- * partitions, so reads return empty results until the COW snapshot read lands).
+ * Read path: routes to [[HoodieScanBuilder]], which plans base-file scans (COW snapshot
+ * and MOR read_optimized) via `HoodieFileIndex`.
  * Write path: falls back to DSv1 via [[V2TableWithV1Fallback]] and [[HoodieV1WriteBuilder]].
  *
  * Schema is resolved via [[HoodieCatalogTable]] (catalog path) or [[HoodieTableMetaClient]]

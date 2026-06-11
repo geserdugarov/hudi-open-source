@@ -17,19 +17,30 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
+import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.SerializableConfiguration
 
 /**
- * Factory that creates partition readers for DSv2 snapshot reads.
- *
- * Skeleton: creates [[HoodiePartitionReader]]s that read no rows. The broadcast
- * columnar file reader and read-schema plumbing land with the COW snapshot read phase.
+ * Factory that creates [[HoodiePartitionReader]]s on executors for DSv2 base-file
+ * snapshot reads.
  */
-class HoodiePartitionReaderFactory extends PartitionReaderFactory {
+class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileReader],
+                                   broadcastConf: Broadcast[SerializableConfiguration],
+                                   readSchema: StructType,
+                                   requiredDataSchema: StructType,
+                                   requiredPartitionSchema: StructType) extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
-    val hoodiePartition = partition.asInstanceOf[HoodieInputPartition]
-    new HoodiePartitionReader(hoodiePartition)
+    new HoodiePartitionReader(
+      partition.asInstanceOf[HoodieInputPartition],
+      broadcastReader,
+      broadcastConf,
+      readSchema,
+      requiredDataSchema,
+      requiredPartitionSchema)
   }
 }

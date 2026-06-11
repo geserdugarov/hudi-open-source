@@ -32,13 +32,10 @@ import java.io.File
 import scala.collection.JavaConverters.asScalaBufferConverter
 
 /**
- * Smoke tests for the `hudi_v2` coexistence skeleton: provider lookup through the SPI,
- * empty `BatchScan` planning, schema/properties/capabilities of the path-based
+ * Smoke tests for `hudi_v2` coexistence with DSv1: provider lookup through the SPI,
+ * `BatchScan` planning, schema/properties/capabilities of the path-based
  * [[HoodieSparkV2Table]], and the V1 write fallback of `df.write.format("hudi_v2")`.
- *
- * The DSv2 scan is a skeleton that plans no input partitions, so `hudi_v2` reads are
- * asserted to return zero rows; these assertions get replaced when the COW snapshot
- * read lands. `format("hudi")` must remain bit-for-bit unaffected.
+ * `format("hudi")` must remain bit-for-bit unaffected.
  */
 class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
 
@@ -65,7 +62,7 @@ class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
     assertResult("hudi_v2")(new HoodieDataSourceV2().shortName())
   }
 
-  test("Test hudi_v2 read plans an empty BatchScan and leaves format hudi untouched") {
+  test("Test hudi_v2 read plans a BatchScan and leaves format hudi untouched") {
     withTempDir { tmp =>
       val tableName = generateTableName
       val path = s"${tmp.getCanonicalPath}/$tableName"
@@ -74,8 +71,11 @@ class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
       val v2Df = spark.read.format("hudi_v2").load(path)
       val v2Plan = planOf(v2Df)
       assert(v2Plan.contains("BatchScan"), s"hudi_v2 read should plan a BatchScan, got:\n$v2Plan")
-      // The scan skeleton plans no input partitions yet.
-      assertResult(0)(v2Df.count())
+      checkAnswer(v2Df.select("id", "name", "price", "ts").orderBy("id").collect())(
+        Seq(1, "a1", 10.0, 1000L),
+        Seq(2, "a2", 20.0, 2000L),
+        Seq(3, "a3", 30.0, 3000L)
+      )
 
       val v1Df = spark.read.format("hudi").load(path)
       val v1Plan = planOf(v1Df)
@@ -127,9 +127,7 @@ class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
         .mode(SaveMode.Overwrite)
         .save(path)
 
-      val partitionPath = new File(path).listFiles()
-        .filter(f => f.isDirectory && !f.getName.startsWith("."))
-        .head.getCanonicalPath
+      val partitionPath = new File(path, "US").getCanonicalPath
 
       // The meta client must be built at the table base path (where .hoodie lives), while
       // the user-supplied partition path is kept as the query path on the table.
@@ -138,9 +136,12 @@ class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
       assertResult(partitionPath)(table.path)
       assert(table.schema().fieldNames.contains("country"))
 
+      // The scan must stay scoped to the partition the user pointed at.
       val df = spark.read.format("hudi_v2").load(partitionPath)
       assert(planOf(df).contains("BatchScan"))
-      assertResult(0)(df.count())
+      checkAnswer(df.select("id", "name", "country").collect())(
+        Seq(1, "a1", "US")
+      )
     }
   }
 
@@ -202,7 +203,7 @@ class TestHoodieDataSourceV2Skeleton extends HoodieSparkSqlTestBase {
         .option(DataSourceReadOptions.QUERY_TYPE.key, DataSourceReadOptions.QUERY_TYPE_READ_OPTIMIZED_OPT_VAL)
         .load(path)
       assert(planOf(roDf).contains("BatchScan"))
-      assertResult(0)(roDf.count())
+      assertResult(3)(roDf.count())
     }
   }
 }
