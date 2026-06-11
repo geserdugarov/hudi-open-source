@@ -17,6 +17,10 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.common.schema.HoodieSchema
+import org.apache.hudi.common.util.{Option => HOption}
+import org.apache.hudi.internal.schema.InternalSchema
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan}
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
@@ -28,15 +32,19 @@ import org.apache.spark.util.SerializableConfiguration
  * read_optimized).
  *
  * Holds the input partitions pre-planned by [[HoodieScanBuilder]] together with the
- * broadcast Parquet reader and hadoop conf the executors read with. Statistics
- * reporting for CBO lands with the pushdown phase.
+ * broadcast Parquet reader and hadoop conf the executors read with, plus the internal
+ * schema (schema-on-read evolution) and table Avro schema (Parquet logical-type repair)
+ * resolved as of the queried instant. Statistics reporting for CBO lands with the
+ * pushdown phase.
  */
 class HoodieBatchScan(outputSchema: StructType,
                       inputPartitions: Array[InputPartition],
                       broadcastReader: Broadcast[SparkColumnarFileReader],
                       broadcastConf: Broadcast[SerializableConfiguration],
                       requiredDataSchema: StructType,
-                      requiredPartitionSchema: StructType) extends Scan with Batch {
+                      requiredPartitionSchema: StructType,
+                      internalSchemaOpt: HOption[InternalSchema],
+                      tableAvroSchema: HOption[HoodieSchema]) extends Scan with Batch {
 
   override def readSchema(): StructType = outputSchema
 
@@ -52,6 +60,8 @@ class HoodieBatchScan(outputSchema: StructType,
       broadcastConf,
       outputSchema,
       requiredDataSchema,
-      requiredPartitionSchema)
+      requiredPartitionSchema,
+      internalSchemaOpt,
+      tableAvroSchema)
   }
 }

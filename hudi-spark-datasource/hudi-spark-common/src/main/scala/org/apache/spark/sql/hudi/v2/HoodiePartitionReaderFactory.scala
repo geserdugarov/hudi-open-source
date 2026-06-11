@@ -17,6 +17,10 @@
 
 package org.apache.spark.sql.hudi.v2
 
+import org.apache.hudi.common.schema.HoodieSchema
+import org.apache.hudi.common.util.{Option => HOption}
+import org.apache.hudi.internal.schema.InternalSchema
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
@@ -32,7 +36,9 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
                                    broadcastConf: Broadcast[SerializableConfiguration],
                                    readSchema: StructType,
                                    requiredDataSchema: StructType,
-                                   requiredPartitionSchema: StructType) extends PartitionReaderFactory {
+                                   requiredPartitionSchema: StructType,
+                                   internalSchemaOpt: HOption[InternalSchema],
+                                   tableAvroSchema: HOption[HoodieSchema]) extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     new HoodiePartitionReader(
@@ -41,6 +47,8 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
       broadcastConf,
       readSchema,
       requiredDataSchema,
-      requiredPartitionSchema)
+      requiredPartitionSchema,
+      internalSchemaOpt,
+      tableAvroSchema)
   }
 }
