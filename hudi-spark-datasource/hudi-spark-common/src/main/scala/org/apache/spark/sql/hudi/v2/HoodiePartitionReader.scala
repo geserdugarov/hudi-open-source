@@ -44,7 +44,8 @@ import java.io.Closeable
  * (schema-on-read evolution) and the table Avro schema (logical-type repair) resolved
  * by [[HoodieScanBuilder]]. The pushed filters only prune row groups (the reader checks
  * them against the file footer); rows are not filtered here — Spark re-applies the
- * filters post-scan.
+ * filters post-scan. A pushed limit caps the rows this reader emits (the limit is only
+ * pushed when there are no filters to re-apply); Spark applies the global limit on top.
  */
 class HoodiePartitionReader(partition: HoodieInputPartition,
                             broadcastReader: Broadcast[SparkColumnarFileReader],
@@ -54,15 +55,18 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
                             requiredPartitionSchema: StructType,
                             internalSchemaOpt: HOption[InternalSchema],
                             tableAvroSchema: HOption[HoodieSchema],
-                            pushedParquetFilters: Array[Filter])
+                            pushedParquetFilters: Array[Filter],
+                            pushedLimit: Option[Int] = None)
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val (rawIter, projectedIter): (Iterator[InternalRow], Iterator[InternalRow]) = createIterators()
+  private val limitedIter: Iterator[InternalRow] =
+    pushedLimit.map(projectedIter.take).getOrElse(projectedIter)
   private var current: InternalRow = _
 
   override def next(): Boolean = {
-    if (projectedIter.hasNext) {
-      current = projectedIter.next()
+    if (limitedIter.hasNext) {
+      current = limitedIter.next()
       true
     } else {
       false

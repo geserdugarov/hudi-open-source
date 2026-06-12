@@ -31,7 +31,8 @@ import org.apache.spark.util.SerializableConfiguration
 
 /**
  * Factory that creates [[HoodiePartitionReader]]s on executors for DSv2 base-file
- * snapshot reads.
+ * snapshot reads. `pushedLimit` is the per-partition row cap of a partially pushed
+ * limit (Spark applies the global limit on top).
  */
 class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileReader],
                                    broadcastConf: Broadcast[SerializableConfiguration],
@@ -40,7 +41,8 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
                                    requiredPartitionSchema: StructType,
                                    internalSchemaOpt: HOption[InternalSchema],
                                    tableAvroSchema: HOption[HoodieSchema],
-                                   pushedParquetFilters: Array[Filter]) extends PartitionReaderFactory {
+                                   pushedParquetFilters: Array[Filter],
+                                   pushedLimit: Option[Int] = None) extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     new HoodiePartitionReader(
@@ -52,6 +54,7 @@ class HoodiePartitionReaderFactory(broadcastReader: Broadcast[SparkColumnarFileR
       requiredPartitionSchema,
       internalSchemaOpt,
       tableAvroSchema,
-      pushedParquetFilters)
+      pushedParquetFilters,
+      pushedLimit)
   }
 }

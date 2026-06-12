@@ -33,8 +33,10 @@ import org.apache.hudi.util.SparkConfigUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.schema.HoodieSchemaRepair
 import org.apache.spark.sql.{HoodieCatalystExpressionUtils, SparkSession}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.connector.read.{InputPartition, Scan, ScanBuilder, SupportsPushDownFilters, SupportsPushDownRequiredColumns}
+import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
+import org.apache.spark.sql.connector.read.{InputPartition, Scan, ScanBuilder, SupportsPushDownAggregates, SupportsPushDownFilters, SupportsPushDownLimit, SupportsPushDownRequiredColumns}
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.hudi.HoodieSqlCommonUtils
 import org.apache.spark.sql.sources.Filter
@@ -50,10 +52,18 @@ import scala.util.control.NonFatal
  * read_optimized).
  *
  * Supports column pruning and filter pushdown (partition pruning, metadata-table data
- * skipping, and Parquet row-group pruning); limit and aggregate pushdown land in later
- * phases. All pushed filters stay advisory: [[pushFilters]] returns every filter back to
- * Spark for post-scan re-application, since file-slice pruning is file-granular and the
- * Parquet filters only prune row groups.
+ * skipping, and Parquet row-group pruning). All pushed filters stay advisory:
+ * [[pushFilters]] returns every filter back to Spark for post-scan re-application, since
+ * file-slice pruning is file-granular and the Parquet filters only prune row groups.
+ *
+ * Limits are pushed as per-partition limits ([[isPartiallyPushed]] stays true so Spark
+ * keeps the global limit) and only when no filters were pushed: every pushed filter is
+ * re-applied post-scan, and capping rows before a residual filter would drop matches.
+ *
+ * Group-by-free COUNT/MIN/MAX aggregations are answered entirely from column-stats
+ * metadata when [[HoodieAggregatePushDown]] deems the stats complete and exact — again
+ * only when no filters were pushed — in which case [[build]] returns a [[HoodieLocalScan]]
+ * holding the pre-computed result row.
  */
 class HoodieScanBuilder(spark: SparkSession,
                         metaClient: HoodieTableMetaClient,
@@ -61,6 +71,8 @@ class HoodieScanBuilder(spark: SparkSession,
                         options: Map[String, String]) extends ScanBuilder
   with SupportsPushDownRequiredColumns
   with SupportsPushDownFilters
+  with SupportsPushDownLimit
+  with SupportsPushDownAggregates
   with SparkAdapterSupport {
 
   private val log = LoggerFactory.getLogger(getClass)
@@ -145,6 +157,64 @@ class HoodieScanBuilder(spark: SparkSession,
 
   override def pushedFilters(): Array[Filter] = pushedFilterArray
 
+  private var pushedLimit: Option[Int] = None
+  // Memoized aggregate resolution keyed by the Aggregation instance: Spark consults
+  // supportCompletePushDown and then pushAggregation with the same instance, and the
+  // resolution reads the metadata table, so it must not run twice.
+  private var resolvedAggregation: Option[(Aggregation, Option[(StructType, InternalRow, Seq[String])])] = None
+  private var pushedAggregation: Option[(StructType, InternalRow, Seq[String])] = None
+
+  /**
+   * Limits are applied per input partition (each reader stops after `limit` rows) and
+   * reported as partially pushed so Spark re-applies the global limit. Pushing is refused
+   * when any filter was pushed: all pushed filters are re-applied post-scan, and rows
+   * counted toward the cap could then be filtered away, losing later matches. (Spark
+   * already never pushes a limit past a residual Filter node; this guard keeps the
+   * invariant local.) An aggregate-answering scan returns its final rows, so a limit on
+   * top of it stays with Spark too.
+   */
+  override def pushLimit(limit: Int): Boolean = {
+    if (pushedFilterArray.isEmpty && pushedAggregation.isEmpty) {
+      pushedLimit = Some(limit)
+      true
+    } else {
+      false
+    }
+  }
+
+  override def isPartiallyPushed(): Boolean = true
+
+  /**
+   * Complete-only aggregate pushdown: both entry points resolve the aggregation against
+   * column-stats metadata via [[HoodieAggregatePushDown]] and answer consistently, so
+   * Spark either removes the aggregate entirely (complete pushdown over the
+   * [[HoodieLocalScan]] built later) or keeps it untouched — this scan never produces
+   * partial-aggregation rows. Aggregates are only answerable when no filters were pushed:
+   * per-file stats cannot be combined under a filter (Spark also never pushes aggregates
+   * when a residual filter remains).
+   */
+  override def supportCompletePushDown(aggregation: Aggregation): Boolean =
+    resolveAggregation(aggregation).isDefined
+
+  override def pushAggregation(aggregation: Aggregation): Boolean = {
+    pushedAggregation = resolveAggregation(aggregation)
+    pushedAggregation.isDefined
+  }
+
+  private def resolveAggregation(aggregation: Aggregation): Option[(StructType, InternalRow, Seq[String])] = {
+    resolvedAggregation match {
+      case Some((prior, result)) if prior eq aggregation => result
+      case _ =>
+        val result = if (pushedFilterArray.nonEmpty) {
+          None
+        } else {
+          HoodieAggregatePushDown.tryPushDown(spark, metaClient, tableSchema, options, aggregation)
+        }
+        resolvedAggregation = Some((aggregation, result))
+        result
+    }
+  }
+
   private lazy val isTimestampKeyGenerator: Boolean = {
     val keyGenerator = metaClient.getTableConfig.getKeyGeneratorClassName
     keyGenerator != null &&
@@ -153,6 +223,17 @@ class HoodieScanBuilder(spark: SparkSession,
   }
 
   override def build(): Scan = {
+    pushedAggregation match {
+      // A fully answered aggregation never touches data files: the result row was computed
+      // from column-stats metadata during pushAggregation.
+      case Some((aggSchema, aggRow, aggDescriptions)) =>
+        new HoodieLocalScan(aggSchema, Array(aggRow), aggDescriptions)
+      case None =>
+        buildBatchScan()
+    }
+  }
+
+  private def buildBatchScan(): Scan = {
     // Invariant established by HoodieV2ReadSupport.isSupportedByDSv2: COW snapshot or
     // MOR read_optimized only, single Parquet base-file format — so reading base files
     // without log merging is correct, and splitting them by byte range is safe.
@@ -272,7 +353,8 @@ class HoodieScanBuilder(spark: SparkSession,
       internalSchemaOpt,
       tableAvroSchema,
       pushedFilterArray,
-      pushedParquetFilters)
+      pushedParquetFilters,
+      pushedLimit)
   }
 
   /**
