@@ -32,6 +32,7 @@ import org.apache.spark.sql.HoodieCatalystExpressionUtils
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -41,7 +42,9 @@ import java.io.Closeable
  * Partition reader that reads its assigned byte range of a single base (Parquet) file
  * using [[SparkColumnarFileReader]] in row mode, honoring the internal schema
  * (schema-on-read evolution) and the table Avro schema (logical-type repair) resolved
- * by [[HoodieScanBuilder]].
+ * by [[HoodieScanBuilder]]. The pushed filters only prune row groups (the reader checks
+ * them against the file footer); rows are not filtered here — Spark re-applies the
+ * filters post-scan.
  */
 class HoodiePartitionReader(partition: HoodieInputPartition,
                             broadcastReader: Broadcast[SparkColumnarFileReader],
@@ -50,7 +53,8 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
                             requiredDataSchema: StructType,
                             requiredPartitionSchema: StructType,
                             internalSchemaOpt: HOption[InternalSchema],
-                            tableAvroSchema: HOption[HoodieSchema])
+                            tableAvroSchema: HOption[HoodieSchema],
+                            pushedParquetFilters: Array[Filter])
   extends PartitionReader[InternalRow] with SparkAdapterSupport {
 
   private val (rawIter, projectedIter): (Iterator[InternalRow], Iterator[InternalRow]) = createIterators()
@@ -95,7 +99,7 @@ class HoodiePartitionReader(partition: HoodieInputPartition,
     }
     val rawIter = broadcastReader.value.read(
       pFile, requiredDataSchema, requiredPartitionSchema,
-      internalSchemaOpt, Seq.empty, storageConf, tableSchemaOpt)
+      internalSchemaOpt, pushedParquetFilters.toSeq, storageConf, tableSchemaOpt)
 
     // The reader emits requiredDataSchema columns with requiredPartitionSchema values
     // appended at the end; realign to readSchema when the two layouts differ (e.g. a
