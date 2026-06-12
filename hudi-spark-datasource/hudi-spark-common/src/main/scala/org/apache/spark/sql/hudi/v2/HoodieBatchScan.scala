@@ -24,6 +24,7 @@ import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan}
 import org.apache.spark.sql.execution.datasources.SparkColumnarFileReader
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -31,11 +32,13 @@ import org.apache.spark.util.SerializableConfiguration
  * Batch scan for snapshot reads of base files via DSv2 (COW snapshot and MOR
  * read_optimized).
  *
- * Holds the input partitions pre-planned by [[HoodieScanBuilder]] together with the
- * broadcast Parquet reader and hadoop conf the executors read with, plus the internal
- * schema (schema-on-read evolution) and table Avro schema (Parquet logical-type repair)
- * resolved as of the queried instant. Statistics reporting for CBO lands with the
- * pushdown phase.
+ * Holds the input partitions pre-planned by [[HoodieScanBuilder]] (already pruned by the
+ * pushed partition filters and metadata-table data skipping) together with the broadcast
+ * Parquet reader and hadoop conf the executors read with, plus the internal schema
+ * (schema-on-read evolution) and table Avro schema (Parquet logical-type repair) resolved
+ * as of the queried instant. `pushedParquetFilters` are handed to the Parquet reader for
+ * row-group pruning only — Spark re-applies all filters post-scan. Statistics reporting
+ * for CBO lands with a later phase.
  */
 class HoodieBatchScan(outputSchema: StructType,
                       inputPartitions: Array[InputPartition],
@@ -44,11 +47,14 @@ class HoodieBatchScan(outputSchema: StructType,
                       requiredDataSchema: StructType,
                       requiredPartitionSchema: StructType,
                       internalSchemaOpt: HOption[InternalSchema],
-                      tableAvroSchema: HOption[HoodieSchema]) extends Scan with Batch {
+                      tableAvroSchema: HOption[HoodieSchema],
+                      val pushedFilters: Array[Filter],
+                      val pushedParquetFilters: Array[Filter]) extends Scan with Batch {
 
   override def readSchema(): StructType = outputSchema
 
-  override def description(): String = s"HoodieBatchScan ${outputSchema.catalogString}"
+  override def description(): String =
+    s"HoodieBatchScan ${outputSchema.catalogString}, PushedFilters: [${pushedFilters.mkString(", ")}]"
 
   override def toBatch: Batch = this
 
@@ -62,6 +68,7 @@ class HoodieBatchScan(outputSchema: StructType,
       requiredDataSchema,
       requiredPartitionSchema,
       internalSchemaOpt,
-      tableAvroSchema)
+      tableAvroSchema,
+      pushedParquetFilters)
   }
 }

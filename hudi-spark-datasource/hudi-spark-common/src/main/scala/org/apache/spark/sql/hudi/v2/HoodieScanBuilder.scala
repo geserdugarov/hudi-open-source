@@ -27,37 +27,55 @@ import org.apache.hudi.config.HoodieBootstrapConfig
 import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.hudi.internal.schema.utils.SerDeHelper
 import org.apache.hudi.io.storage.HoodieSparkParquetReader.ENABLE_LOGICAL_TIMESTAMP_REPAIR
+import org.apache.hudi.keygen.{TimestampBasedAvroKeyGenerator, TimestampBasedKeyGenerator}
 import org.apache.hudi.util.SparkConfigUtils
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.schema.HoodieSchemaRepair
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.connector.read.{InputPartition, Scan, ScanBuilder, SupportsPushDownRequiredColumns}
+import org.apache.spark.sql.{HoodieCatalystExpressionUtils, SparkSession}
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.connector.read.{InputPartition, Scan, ScanBuilder, SupportsPushDownFilters, SupportsPushDownRequiredColumns}
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.hudi.HoodieSqlCommonUtils
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.types.{StringType, StructType}
 import org.apache.spark.util.SerializableConfiguration
 import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
+import scala.util.control.NonFatal
 
 /**
  * Scan builder for DSv2 snapshot reads of base files (COW snapshot and MOR
  * read_optimized).
  *
- * Supports column pruning; filter, limit, and aggregate pushdown land in later phases,
- * so [[build]] plans input partitions from the unfiltered latest file slices.
+ * Supports column pruning and filter pushdown (partition pruning, metadata-table data
+ * skipping, and Parquet row-group pruning); limit and aggregate pushdown land in later
+ * phases. All pushed filters stay advisory: [[pushFilters]] returns every filter back to
+ * Spark for post-scan re-application, since file-slice pruning is file-granular and the
+ * Parquet filters only prune row groups.
  */
 class HoodieScanBuilder(spark: SparkSession,
                         metaClient: HoodieTableMetaClient,
                         tableSchema: StructType,
                         options: Map[String, String]) extends ScanBuilder
   with SupportsPushDownRequiredColumns
+  with SupportsPushDownFilters
   with SparkAdapterSupport {
 
   private val log = LoggerFactory.getLogger(getClass)
 
   private var requiredSchema: StructType = tableSchema
+
+  // Catalyst forms of the pushed filters, classified by pushFilters: partition filters drive
+  // partition pruning, data filters drive metadata-table data skipping (column stats, record
+  // index); both feed HoodieFileIndex.filterFileSlices in build().
+  private var partitionFilterExpressions: Seq[Expression] = Seq.empty
+  private var dataFilterExpressions: Seq[Expression] = Seq.empty
+  // Source filters safe to hand the Parquet reader for row-group pruning (no partition-column
+  // references) and the full set reported back through pushedFilters().
+  private var pushedParquetFilters: Array[Filter] = Array.empty
+  private var pushedFilterArray: Array[Filter] = Array.empty
 
   // Mirror DSv1 (HoodieBaseHadoopFsRelationFactory.specifiedQueryTimestamp): a time-travel
   // read resolves schemas as of this instant; HoodieFileIndex picks the same option up from
@@ -68,6 +86,70 @@ class HoodieScanBuilder(spark: SparkSession,
 
   override def pruneColumns(requiredSchema: StructType): Unit = {
     this.requiredSchema = requiredSchema
+  }
+
+  /**
+   * Classifies the pushed filters:
+   *
+   *  - filters convertible to Catalyst expressions referencing only partition columns become
+   *    partition filters (partition pruning), mirroring DSv1's
+   *    [[HoodieBaseRelation]] isPartitionPredicate split;
+   *  - all other convertible filters (including mixed partition/data references) become data
+   *    filters for metadata-table data skipping;
+   *  - filters that cannot be converted are post-scan only — Spark re-applies them.
+   *
+   * For timestamp key generators the file index types partition columns as STRING because the
+   * partition path holds keygen-formatted dates rather than the source values; a filter on a
+   * non-string partition column can then not be evaluated against path-parsed values, so it is
+   * demoted to a data filter instead of pruning (the SQL DSv1 path likewise cannot prune those).
+   *
+   * Filters referencing a partition column are never forwarded to Parquet: the column may be
+   * absent from base files (drop_partition_columns, path extraction), and for timestamp key
+   * generators the stored values differ from the path-formatted ones a converted filter targets.
+   *
+   * Every filter is returned for Spark to re-apply: file-slice pruning is file-granular and the
+   * Parquet filters only prune row groups, so neither guarantees row-level filtering.
+   */
+  override def pushFilters(filters: Array[Filter]): Array[Filter] = {
+    val resolver = spark.sessionState.analyzer.resolver
+    val partitionColumns = metaClient.getTableConfig.getPartitionFields.orElse(Array.empty[String])
+    def isPartitionColumn(name: String): Boolean = partitionColumns.exists(resolver(name, _))
+
+    val convertedFilters = filters.flatMap { filter =>
+      val exprOpt = try {
+        HoodieCatalystExpressionUtils.convertToCatalystExpression(filter, tableSchema)
+      } catch {
+        // convertToCatalystExpression asserts that referenced columns exist in the table
+        // schema; degrade to post-scan-only instead of failing the scan, as DSv1 only warns.
+        case _: AssertionError => None
+        case NonFatal(_) => None
+      }
+      if (exprOpt.isEmpty) {
+        log.warn(s"Failed to convert filter into Catalyst expression, it will not be pushed down: $filter")
+      }
+      exprOpt.map(expr => filter -> expr)
+    }
+
+    val (partitionRefOnly, dataRef) = convertedFilters.partition { case (_, expr) =>
+      expr.references.nonEmpty && expr.references.forall { r =>
+        isPartitionColumn(r.name) && (!isTimestampKeyGenerator || r.dataType == StringType)
+      }
+    }
+    partitionFilterExpressions = partitionRefOnly.map(_._2).toSeq
+    dataFilterExpressions = dataRef.map(_._2).toSeq
+    pushedParquetFilters = filters.filter(_.references.forall(ref => !isPartitionColumn(ref)))
+    pushedFilterArray = (convertedFilters.map(_._1) ++ pushedParquetFilters).distinct
+
+    filters
+  }
+
+  override def pushedFilters(): Array[Filter] = pushedFilterArray
+
+  private lazy val isTimestampKeyGenerator: Boolean = {
+    val keyGenerator = metaClient.getTableConfig.getKeyGeneratorClassName
+    keyGenerator != null &&
+      (keyGenerator == classOf[TimestampBasedKeyGenerator].getCanonicalName ||
+        keyGenerator == classOf[TimestampBasedAvroKeyGenerator].getCanonicalName)
   }
 
   override def build(): Scan = {
@@ -152,9 +234,13 @@ class HoodieScanBuilder(spark: SparkSession,
     val broadcastReader = spark.sparkContext.broadcast(reader)
     val broadcastConf = spark.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
 
-    // No filters are pushed yet: empty filter lists yield the latest base file of every
-    // file slice in scope (the query path may scope the scan to a partition sub-path).
-    val fileSlicesPerPartition = fileIndex.filterFileSlices(Seq.empty, Seq.empty)
+    // Partition filters prune partitions and data filters drive metadata-table data skipping
+    // (column stats, record index). Timestamp keygen partition filters must be converted to
+    // the keygen output format first: this file index is built with shouldEmbedFileSlices =
+    // false, so filterFileSlices does not convert them itself, unlike the SQL DSv1 path.
+    val convertedPartitionFilters =
+      HoodieFileIndex.convertFilterForTimestampKeyGenerator(metaClient, partitionFilterExpressions)
+    val fileSlicesPerPartition = fileIndex.filterFileSlices(dataFilterExpressions, convertedPartitionFilters)
 
     // Mirror the DSv1 split path: break each base file into ranges of at most
     // spark.sql.files.maxPartitionBytes so large files don't become single-task
@@ -184,7 +270,9 @@ class HoodieScanBuilder(spark: SparkSession,
       requiredDataSchema,
       requiredPartitionSchema,
       internalSchemaOpt,
-      tableAvroSchema)
+      tableAvroSchema,
+      pushedFilterArray,
+      pushedParquetFilters)
   }
 
   /**
